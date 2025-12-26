@@ -165,7 +165,7 @@ def get_database_connection():
         keepalives_count=5
     )
 
-@st.cache_data(ttl=600)  # Cache for 10 minutes
+@st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes, silent refresh
 def load_vehicle_data():
     """Load latest vehicle tracking data"""
     connection = None
@@ -912,7 +912,7 @@ def create_sparkline_svg(values, dates):
 
     return svg
 
-@st.cache_data(ttl=600)  # Cache for 10 minutes
+@st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes, silent refresh
 def load_vehicle_load_details():
     """Load ALL vehicles and map with their load details from swift_trip_log"""
     connection = None
@@ -1271,8 +1271,7 @@ def show_load_details():
     """Display load details table"""
     st.subheader("🚚 Load Details")
 
-    with st.spinner("Loading vehicle load details..."):
-        load_df = load_vehicle_load_details()
+    load_df = load_vehicle_load_details()
 
     if len(load_df) == 0:
         st.warning("No load details available")
@@ -1630,7 +1629,7 @@ def show_load_details():
         use_container_width=False
     )
 
-@st.cache_data(ttl=600)  # Cache for 10 minutes
+@st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes, silent refresh
 def load_trip_km_by_days_data():
     """Load trip data with daily GPS KM from loading date"""
     connection = None
@@ -1799,8 +1798,7 @@ def show_trip_km_by_days():
     """Display Trip Km By Days table"""
     st.subheader("📅 Trip Km By Days")
 
-    with st.spinner("Loading trip km data..."):
-        load_df = load_trip_km_by_days_data()
+    load_df = load_trip_km_by_days_data()
 
     if len(load_df) == 0:
         st.warning("No data available")
@@ -1917,11 +1915,14 @@ def show_status_summary(df):
     """Show night driving analysis - vehicles driven between 11 PM yesterday and 6 AM today"""
     import streamlit.components.v1 as components
     from datetime import datetime
+    import pytz
 
     st.subheader("🌙 Night Driving Alerts")
 
-    # Check current time for live alert
-    current_hour = datetime.now().hour
+    # Check current time for live alert (using Indian Standard Time)
+    ist = pytz.timezone('Asia/Kolkata')
+    current_time_ist = datetime.now(ist)
+    current_hour = current_time_ist.hour
     is_night_time = current_hour >= 23 or current_hour < 6
 
     # Get night driving data from database
@@ -2025,13 +2026,13 @@ def show_status_summary(df):
                     </tr>'''
                 alert_html += '</table>'
 
-                components.html(alert_html, height=min(250, 60 + len(live_df) * 40), scrolling=True)
+                components.html(alert_html, height=min(500, 60 + len(live_df) * 40), scrolling=True)
                 st.markdown("---")
             else:
                 st.info("✅ No vehicles currently running at night.")
                 st.markdown("---")
         else:
-            st.info(f"ℹ️ Current time: {datetime.now().strftime('%H:%M')} - Night driving alerts active between 11 PM and 6 AM")
+            st.info(f"ℹ️ Current time (IST): {current_time_ist.strftime('%H:%M')} - Night driving alerts active between 11 PM and 6 AM")
             st.markdown("---")
 
         st.subheader("📋 Last Night's Driving Summary (11 PM - 6 AM)")
@@ -2823,9 +2824,8 @@ def main():
     # Silent auto-refresh every 30 seconds (30000 ms) for live alerts - main data stays cached for 10 minutes
     st_autorefresh(interval=30000, limit=None, key="vehicle_data_refresh")
 
-    # Load data
-    with st.spinner("Loading vehicle tracking data..."):
-        df = load_vehicle_data()
+    # Load data silently (no spinner during auto-refresh)
+    df = load_vehicle_data()
 
     if len(df) == 0:
         st.error("No vehicle data available")
