@@ -6,3 +6,5 @@ streamlit-folium>=0.15.0
 geopy>=2.4.0
 streamlit-autorefresh>=1.0.1
 python-dotenv>=1.0.0
+openpyxl>=3.1.0
+pytz>=2023.3
