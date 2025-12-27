@@ -165,6 +165,22 @@ def get_database_connection():
         keepalives_count=5
     )
 
+@st.cache_data(ttl=600, show_spinner=False)
+def load_owner_mapping():
+    """Load owner name mapping from Excel file"""
+    try:
+        excel_path = os.path.join(os.path.dirname(__file__), 'party name map.xlsx')
+        owner_df = pd.read_excel(excel_path)
+        owner_df['normalized_vehicle_no'] = owner_df['RegistrationNo'].apply(
+            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+        )
+        owner_df['owner_name'] = owner_df['PartyName'].apply(
+            lambda x: 'Own Vehicle' if x in ['Swift Road Link Pvt. Ltd.', 'Nishant Saini Associates'] else x
+        )
+        return owner_df[['normalized_vehicle_no', 'owner_name']]
+    except Exception as e:
+        return pd.DataFrame(columns=['normalized_vehicle_no', 'owner_name'])
+
 @st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes, silent refresh
 def load_vehicle_data():
     """Load latest vehicle tracking data"""
@@ -399,6 +415,18 @@ def load_vehicle_data():
             df['driver_name'] = None
             df['driver_phone_no'] = None
 
+        # Add owner name from Excel file
+        try:
+            owner_df = load_owner_mapping()
+            df['normalized_vehicle_no'] = df['vehicle_no'].apply(
+                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+            )
+            df = df.merge(owner_df, on='normalized_vehicle_no', how='left')
+            df = df.drop(columns=['normalized_vehicle_no'], errors='ignore')
+            df['owner_name'] = df['owner_name'].fillna('-')
+        except Exception as e:
+            df['owner_name'] = '-'
+
         return df
 
     except psycopg2.OperationalError as e:
@@ -507,6 +535,7 @@ def show_map(df):
             loading_date = '-'
         driver_name = row.get('driver_name', '-') if pd.notna(row.get('driver_name')) else '-'
         driver_phone = row.get('driver_phone_no', '-') if pd.notna(row.get('driver_phone_no')) else '-'
+        owner_name = row.get('owner_name', '-') if pd.notna(row.get('owner_name')) else '-'
 
         popup_html = f"""
         <div style="font-family: Arial; width: 280px;">
@@ -523,6 +552,7 @@ def show_map(df):
             <p style="margin: 3px 0;"><b>Loading Date:</b> {loading_date}</p>
             <p style="margin: 3px 0;"><b>Driver:</b> {driver_name}</p>
             <p style="margin: 3px 0;"><b>Driver Phone:</b> {driver_phone}</p>
+            <p style="margin: 3px 0;"><b>Owner Name:</b> {owner_name}</p>
         </div>
         """
 
@@ -1028,7 +1058,7 @@ def load_vehicle_load_details():
                             WHEN vehicle_no LIKE '% %' THEN
                                 SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
                             -- Format: "2081NL01AJ" or "2081NL01AJ-S" (starts with 4 digits)
-                            WHEN LENGTH(vehicle_no) >= 10
+                            WHEN LENGTH(vehicle_no) >= 9
                                 AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
                                 AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
                                 CASE
@@ -1089,6 +1119,25 @@ def load_vehicle_load_details():
         for col in ['lr_date', 'trip_start_date', 'trip_end_date', 'loading_date', 'unloading_date', 'created_at']:
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors='coerce')
+
+        # Fetch owner name from party name map Excel file
+        try:
+            excel_path = os.path.join(os.path.dirname(__file__), 'party name map.xlsx')
+            owner_df = pd.read_excel(excel_path)
+            # Normalize RegistrationNo for matching
+            owner_df['normalized_vehicle_no'] = owner_df['RegistrationNo'].apply(
+                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+            )
+            # Apply owner name mapping logic
+            owner_df['owner_name'] = owner_df['PartyName'].apply(
+                lambda x: 'Own Vehicle' if x in ['Swift Road Link Pvt. Ltd.', 'Nishant Saini Associates'] else x
+            )
+            owner_df = owner_df[['normalized_vehicle_no', 'owner_name']]
+            df = df.merge(owner_df, left_on='vehicle_no', right_on='normalized_vehicle_no', how='left')
+            df = df.drop(columns=['normalized_vehicle_no'], errors='ignore')
+        except Exception as e:
+            # If Excel file doesn't exist or read fails, just add empty owner_name column
+            df['owner_name'] = None
 
         # Fetch daily GPS KM data for sparkline trends
         # Using LAG to calculate daily KM as difference between consecutive days' end odometer
@@ -1327,7 +1376,7 @@ def show_load_details():
     display_cols = [
         'vehicle_no', 'trip_status', 'current_trip_status', 'route', 'party', 'loading_date',
         'driver', 'driver_phone_no',
-        'gps_today_km', 'gps_yesterday_km', 'gps_month_km', 'days_above_350', 'km_trend'
+        'gps_today_km', 'gps_yesterday_km', 'gps_month_km', 'days_above_350', 'km_trend', 'owner_name'
     ]
 
     # Filter columns that exist
@@ -1348,7 +1397,8 @@ def show_load_details():
         'gps_yesterday_km': 'GPS Yesterday KM',
         'gps_month_km': 'GPS Month KM',
         'days_above_350': 'Days >350 KM',
-        'km_trend': 'KM Trend (Loading to Today)'
+        'km_trend': 'KM Trend (Loading to Today)',
+        'owner_name': 'Owner Name'
     }
 
     display_df = display_df.rename(columns=column_mapping)
@@ -1423,7 +1473,7 @@ def show_load_details():
                 styles.append(base_style + bg_color + 'text-align: center; font-weight: 700; color: #4FC3F7;')
             elif col in ['Driver Phone', 'Record Created', 'Loading Date']:
                 styles.append(base_style + bg_color + 'text-align: center;')
-            elif col in ['Route', 'Party', 'Driver']:
+            elif col in ['Route', 'Party', 'Driver', 'Owner Name']:
                 styles.append(base_style + bg_color + 'text-align: left;')
             elif col == 'KM Trend (Loading to Today)':
                 styles.append(base_style + bg_color + 'text-align: center; font-family: monospace; font-size: 14px;')
@@ -1513,6 +1563,11 @@ def show_load_details():
                 min-width: 140px;
                 white-space: nowrap;
             }}
+            .load-details-table .owner-cell {{
+                text-align: left;
+                min-width: 150px;
+                white-space: nowrap;
+            }}
             .load-details-table .trend-cell {{
                 text-align: center;
                 padding: 4px;
@@ -1575,6 +1630,8 @@ def show_load_details():
                     html_table += f'<td class="party-cell">{val}</td>'
                 elif col == 'Driver':
                     html_table += f'<td class="driver-cell">{val}</td>'
+                elif col == 'Owner Name':
+                    html_table += f'<td class="owner-cell">{val}</td>'
                 elif col in ['Trip Status', 'Loading Date', 'Driver Phone', 'GPS Today KM', 'GPS Yesterday KM', 'GPS Month KM', 'Days >350 KM']:
                     html_table += f'<td class="center">{val}</td>'
                 else:
@@ -1681,7 +1738,7 @@ def load_trip_km_by_days_data():
                         UPPER(CASE
                             WHEN vehicle_no LIKE '% %' THEN
                                 SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                            WHEN LENGTH(vehicle_no) >= 10
+                            WHEN LENGTH(vehicle_no) >= 9
                                 AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
                                 AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
                                 CASE
@@ -1960,7 +2017,7 @@ def show_status_summary(df):
                         UPPER(CASE
                             WHEN vehicle_no LIKE '% %' THEN
                                 SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                            WHEN LENGTH(vehicle_no) >= 10
+                            WHEN LENGTH(vehicle_no) >= 9
                                 AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
                                 AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
                                 CASE
@@ -1982,7 +2039,7 @@ def show_status_summary(df):
                         UPPER(CASE
                             WHEN vehicle_no LIKE '% %' THEN
                                 SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                            WHEN LENGTH(vehicle_no) >= 10
+                            WHEN LENGTH(vehicle_no) >= 9
                                 AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
                                 AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
                                 CASE
@@ -2003,6 +2060,11 @@ def show_status_summary(df):
                 live_df['driver_code'] = live_df['driver_code'].fillna('-')
                 live_df['driver_phone_no'] = live_df['driver_phone_no'].fillna('-')
 
+                # Merge owner info
+                owner_df = load_owner_mapping()
+                live_df = live_df.merge(owner_df, on='normalized_vehicle_no', how='left')
+                live_df['owner_name'] = live_df['owner_name'].fillna('-')
+
                 # Display live alert table
                 alert_html = '''
                 <style>
@@ -2013,7 +2075,7 @@ def show_status_summary(df):
                     .alert-table td.center { text-align: center; }
                 </style>
                 <table class="alert-table">
-                <tr><th>Vehicle No</th><th>Driver (Code)</th><th>Phone</th><th>Speed</th><th>Location</th></tr>
+                <tr><th>Vehicle No</th><th>Driver (Code)</th><th>Phone</th><th>Speed</th><th>Location</th><th>Owner Name</th></tr>
                 '''
                 for _, row in live_df.iterrows():
                     driver = f"{row['driver_name']} ({row['driver_code']})" if row['driver_name'] != '-' else '-'
@@ -2023,6 +2085,7 @@ def show_status_summary(df):
                         <td class="center">{row['driver_phone_no']}</td>
                         <td class="center"><b>{row['speed']}</b> km/h</td>
                         <td>{row['location'] if row['location'] else '-'}</td>
+                        <td>{row['owner_name']}</td>
                     </tr>'''
                 alert_html += '</table>'
 
@@ -2095,7 +2158,7 @@ def show_status_summary(df):
                     UPPER(CASE
                         WHEN vehicle_no LIKE '% %' THEN
                             SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        WHEN LENGTH(vehicle_no) >= 10
+                        WHEN LENGTH(vehicle_no) >= 9
                             AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
                             AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
                             CASE
@@ -2118,7 +2181,7 @@ def show_status_summary(df):
                     UPPER(CASE
                         WHEN vehicle_no LIKE '% %' THEN
                             SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        WHEN LENGTH(vehicle_no) >= 10
+                        WHEN LENGTH(vehicle_no) >= 9
                             AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
                             AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
                             CASE
@@ -2159,6 +2222,14 @@ def show_status_summary(df):
             st.info("No vehicles were driven between 11 PM yesterday and 6 AM today.")
             return
 
+        # Merge owner info
+        owner_df = load_owner_mapping()
+        night_df['normalized_vehicle_no'] = night_df['vehicle_no'].apply(
+            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+        )
+        night_df = night_df.merge(owner_df, on='normalized_vehicle_no', how='left')
+        night_df['owner_name'] = night_df['owner_name'].fillna('-')
+
         # Display count
         st.success(f"🚛 **{len(night_df)} vehicles** were driven during night hours (11 PM - 6 AM)")
 
@@ -2185,8 +2256,8 @@ def show_status_summary(df):
         display_df['Night KM'] = display_df['night_km'].apply(lambda x: f"{x:.1f}" if pd.notna(x) and x > 0 else '0.0')
 
         # Select columns for display
-        display_df = display_df[['vehicle_no', 'Driver', 'driver_phone', 'route', 'start_location', 'end_location', 'First Seen', 'Last Seen', 'Duration', 'Night KM', 'max_speed']]
-        display_df.columns = ['Vehicle No', 'Driver (Code)', 'Driver Phone', 'Route', 'Start Location', 'End Location', 'First Seen', 'Last Seen', 'Duration', 'Night KM', 'Max Speed']
+        display_df = display_df[['vehicle_no', 'Driver', 'driver_phone', 'route', 'start_location', 'end_location', 'First Seen', 'Last Seen', 'Duration', 'Night KM', 'max_speed', 'owner_name']]
+        display_df.columns = ['Vehicle No', 'Driver (Code)', 'Driver Phone', 'Route', 'Start Location', 'End Location', 'First Seen', 'Last Seen', 'Duration', 'Night KM', 'Max Speed', 'Owner Name']
 
         # Build HTML table
         num_rows = len(display_df)
@@ -2313,11 +2384,11 @@ def show_overspeed_alerts(df):
             WITH overspeed_data AS (
                 SELECT
                     f.vehicle_no,
-                    CASE
+                    UPPER(CASE
                         WHEN f.vehicle_no LIKE '% %' THEN
                             SPLIT_PART(f.vehicle_no, ' ', 2) || SPLIT_PART(f.vehicle_no, ' ', 1)
                         ELSE f.vehicle_no
-                    END as normalized_vehicle_no,
+                    END) as normalized_vehicle_no,
                     f.speed,
                     f.location,
                     f.date_time
@@ -2352,7 +2423,7 @@ def show_overspeed_alerts(df):
                     UPPER(CASE
                         WHEN vehicle_no LIKE '% %' THEN
                             SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        WHEN LENGTH(vehicle_no) >= 10
+                        WHEN LENGTH(vehicle_no) >= 9
                             AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
                             AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
                             CASE
@@ -2374,7 +2445,7 @@ def show_overspeed_alerts(df):
                     UPPER(CASE
                         WHEN vehicle_no LIKE '% %' THEN
                             SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        WHEN LENGTH(vehicle_no) >= 10
+                        WHEN LENGTH(vehicle_no) >= 9
                             AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
                             AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
                             CASE
@@ -2450,7 +2521,7 @@ def show_overspeed_alerts(df):
                     UPPER(CASE
                         WHEN vehicle_no LIKE '% %' THEN
                             SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        WHEN LENGTH(vehicle_no) >= 10
+                        WHEN LENGTH(vehicle_no) >= 9
                             AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
                             AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
                             CASE
@@ -2472,7 +2543,7 @@ def show_overspeed_alerts(df):
                     UPPER(CASE
                         WHEN vehicle_no LIKE '% %' THEN
                             SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        WHEN LENGTH(vehicle_no) >= 10
+                        WHEN LENGTH(vehicle_no) >= 9
                             AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
                             AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
                             CASE
@@ -2493,6 +2564,11 @@ def show_overspeed_alerts(df):
             live_overspeed_df['driver_code'] = live_overspeed_df['driver_code'].fillna('-')
             live_overspeed_df['driver_phone_no'] = live_overspeed_df['driver_phone_no'].fillna('-')
 
+            # Merge owner info
+            owner_df = load_owner_mapping()
+            live_overspeed_df = live_overspeed_df.merge(owner_df, on='normalized_vehicle_no', how='left')
+            live_overspeed_df['owner_name'] = live_overspeed_df['owner_name'].fillna('-')
+
             # Display live alert table with duration
             alert_html = '''
             <style>
@@ -2505,7 +2581,7 @@ def show_overspeed_alerts(df):
                 .overspeed-alert-table td.duration { text-align: center; font-weight: bold; color: #e65100; }
             </style>
             <table class="overspeed-alert-table">
-            <tr><th>Vehicle No</th><th>Driver (Code)</th><th>Phone</th><th>Speed</th><th>Duration</th><th>Location</th></tr>
+            <tr><th>Vehicle No</th><th>Driver (Code)</th><th>Phone</th><th>Speed</th><th>Duration</th><th>Location</th><th>Owner Name</th></tr>
             '''
             for _, row in live_overspeed_df.iterrows():
                 driver = f"{row['driver_name']} ({row['driver_code']})" if row['driver_name'] != '-' else '-'
@@ -2524,6 +2600,7 @@ def show_overspeed_alerts(df):
                     <td class="speed">{row['speed']} km/h</td>
                     <td class="duration">{duration_str}</td>
                     <td>{row['location'] if row['location'] else '-'}</td>
+                    <td>{row['owner_name']}</td>
                 </tr>'''
             alert_html += '</table>'
 
@@ -2540,6 +2617,14 @@ def show_overspeed_alerts(df):
             st.info("No overspeed incidents (>60 km/h for >=1 min) in the last 24 hours.")
             return
 
+        # Merge owner info for overspeed summary
+        owner_df = load_owner_mapping()
+        overspeed_df['normalized_vehicle_no'] = overspeed_df['vehicle_no'].apply(
+            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+        )
+        overspeed_df = overspeed_df.merge(owner_df, on='normalized_vehicle_no', how='left')
+        overspeed_df['owner_name'] = overspeed_df['owner_name'].fillna('-')
+
         st.warning(f"⚠️ **{len(overspeed_df)} vehicles** had overspeed incidents in the last 24 hours")
 
         # Create display dataframe
@@ -2554,8 +2639,8 @@ def show_overspeed_alerts(df):
         display_df['Last Overspeed'] = pd.to_datetime(display_df['last_overspeed']).dt.strftime('%Y-%m-%d %H:%M')
 
         # Select columns for display (removed Duration, added Overspeed Times)
-        display_df = display_df[['vehicle_no', 'Driver', 'driver_phone', 'max_speed', 'avg_speed', 'overspeed_times', 'First Overspeed', 'Last Overspeed', 'max_speed_location']]
-        display_df.columns = ['Vehicle No', 'Driver (Code)', 'Phone', 'Max Speed', 'Avg Speed', 'Overspeed Count', 'First Overspeed', 'Last Overspeed', 'Location']
+        display_df = display_df[['vehicle_no', 'Driver', 'driver_phone', 'max_speed', 'avg_speed', 'overspeed_times', 'First Overspeed', 'Last Overspeed', 'max_speed_location', 'owner_name']]
+        display_df.columns = ['Vehicle No', 'Driver (Code)', 'Phone', 'Max Speed', 'Avg Speed', 'Overspeed Count', 'First Overspeed', 'Last Overspeed', 'Location', 'Owner Name']
 
         # Build HTML table
         num_rows = len(display_df)
