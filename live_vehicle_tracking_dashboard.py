@@ -2864,7 +2864,15 @@ def show_overspeed_alerts(df):
 def get_driver_home_data():
     """Get driver home addresses from Swift Driver Address.xls file"""
     try:
-        excel_path = os.path.join(os.path.dirname(__file__), 'Swift Driver Address.xls')
+        from pathlib import Path
+
+        # Get the directory where this script is located (works on local and cloud)
+        script_dir = Path(__file__).parent.resolve()
+        excel_path = script_dir / 'Swift Driver Address.xls'
+
+        if not excel_path.exists():
+            return pd.DataFrame()
+
         driver_df = pd.read_excel(excel_path)
 
         # Rename columns to match expected format
