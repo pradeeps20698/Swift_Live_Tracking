@@ -26,25 +26,37 @@ st.set_page_config(
 # Custom CSS
 st.markdown("""
 <style>
-    /* Hide loading spinner and prevent screen flash during auto-refresh */
-    .stSpinner, [data-testid="stStatusWidget"] {
+    /* PREVENT SCREEN BLUR/FLASH DURING AUTO-REFRESH */
+    /* Hide all loading indicators */
+    .stSpinner, [data-testid="stStatusWidget"], .stProgress, div[data-testid="stSpinner"] {
         display: none !important;
+        visibility: hidden !important;
     }
 
-    /* Prevent page content from disappearing during refresh */
-    .main .block-container {
+    /* Force all content to stay visible during rerun */
+    .main, .main .block-container, [data-testid="stAppViewContainer"],
+    [data-testid="stAppViewBlockContainer"], .stApp, section.main {
         opacity: 1 !important;
         visibility: visible !important;
+        filter: none !important;
+        -webkit-filter: none !important;
     }
 
-    /* Hide the "Running..." status */
-    [data-testid="stAppViewBlockContainer"] {
+    /* Override Streamlit's fade/blur transitions */
+    *, *::before, *::after {
+        transition: none !important;
+        animation: none !important;
+    }
+
+    /* Prevent the "Running..." overlay */
+    [data-testid="stHeader"], [data-testid="stToolbar"] {
         opacity: 1 !important;
     }
 
-    /* Smooth transitions to prevent jarring updates */
-    .element-container, .stMarkdown, .stDataFrame {
-        transition: none !important;
+    /* Keep iframes visible (for HTML components) */
+    iframe {
+        opacity: 1 !important;
+        visibility: visible !important;
     }
 
     .main-header {
@@ -3218,8 +3230,8 @@ def main():
     """, unsafe_allow_html=True)
     st.markdown('<p style="text-align: center; font-size: 1.1rem; margin-top: -15px; margin-bottom: 0;"><strong>Real-time Vehicle Location & Status Monitoring</strong></p>', unsafe_allow_html=True)
 
-    # Silent auto-refresh every 30 seconds (30000 ms) for live alerts - main data stays cached for 10 minutes
-    st_autorefresh(interval=30000, limit=None, key="vehicle_data_refresh")
+    # Silent auto-refresh every 60 seconds (60000 ms) for live alerts - main data stays cached for 10 minutes
+    st_autorefresh(interval=60000, limit=None, key="vehicle_data_refresh")
 
     # Load data silently (no spinner during auto-refresh)
     df = load_vehicle_data()
