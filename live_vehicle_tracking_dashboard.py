@@ -190,6 +190,7 @@ def load_vehicle_data():
         connection = get_database_connection()
 
         # Get latest location for each vehicle (unique vehicles only)
+        # Also get the last time each vehicle was moving (speed > 0) for idle time calculation
         query = """
             WITH ranked_records AS (
                 SELECT
@@ -216,25 +217,36 @@ def load_vehicle_data():
                     AND longitude IS NOT NULL
                     AND latitude != 0
                     AND longitude != 0
+            ),
+            last_moving AS (
+                SELECT DISTINCT ON (vehicle_no)
+                    vehicle_no,
+                    date_time as last_moving_time
+                FROM fvts_vehicles
+                WHERE speed > 0
+                    AND date_time >= NOW() - INTERVAL '7 days'
+                ORDER BY vehicle_no, date_time DESC
             )
             SELECT
-                id,
-                vehicle_no,
-                imei,
-                location,
-                date_time,
-                temperature,
-                ignition,
-                latitude,
-                longitude,
-                speed,
-                angle,
-                odometer,
-                pincode,
-                recorded_at
-            FROM ranked_records
-            WHERE rn = 1
-            ORDER BY vehicle_no;
+                r.id,
+                r.vehicle_no,
+                r.imei,
+                r.location,
+                r.date_time,
+                r.temperature,
+                r.ignition,
+                r.latitude,
+                r.longitude,
+                r.speed,
+                r.angle,
+                r.odometer,
+                r.pincode,
+                r.recorded_at,
+                lm.last_moving_time
+            FROM ranked_records r
+            LEFT JOIN last_moving lm ON r.vehicle_no = lm.vehicle_no
+            WHERE r.rn = 1
+            ORDER BY r.vehicle_no;
         """
 
         df = pd.read_sql_query(query, connection)
@@ -244,6 +256,8 @@ def load_vehicle_data():
             df['date_time'] = pd.to_datetime(df['date_time'], errors='coerce')
         if 'recorded_at' in df.columns:
             df['recorded_at'] = pd.to_datetime(df['recorded_at'], errors='coerce')
+        if 'last_moving_time' in df.columns:
+            df['last_moving_time'] = pd.to_datetime(df['last_moving_time'], errors='coerce')
 
         # Calculate time since last update
         now = datetime.now()
@@ -273,13 +287,37 @@ def load_vehicle_data():
 
         df['status'] = df.apply(get_status, axis=1)
 
-        # Calculate idle time (for vehicles that are idle)
-        df['idle_time'] = df.apply(
-            lambda row: f"{int(row['hours_ago'])}h {int((row['hours_ago'] % 1) * 60)}m"
-            if row['status'] == 'Idle' and pd.notna(row['hours_ago'])
-            else None,
-            axis=1
-        )
+        # Calculate ACTUAL idle time (time since vehicle was last moving with speed > 0)
+        def calculate_idle_time(row):
+            if row['status'] != 'Idle':
+                return None
+
+            # If vehicle is currently moving, no idle time
+            if row['speed'] > 0:
+                return None
+
+            # If we have last_moving_time, calculate actual idle duration
+            if pd.notna(row.get('last_moving_time')):
+                idle_hours = (now - row['last_moving_time']).total_seconds() / 3600
+                if idle_hours < 0:
+                    idle_hours = 0
+
+                # Format based on duration
+                if idle_hours >= 24:
+                    # Show in days and hours if >= 24 hours
+                    days = int(idle_hours // 24)
+                    remaining_hours = int(idle_hours % 24)
+                    return f"{days}d {remaining_hours}h"
+                else:
+                    # Show in hours and minutes if < 24 hours
+                    hours = int(idle_hours)
+                    minutes = int((idle_hours % 1) * 60)
+                    return f"{hours}h {minutes}m"
+            else:
+                # No movement data in last 7 days, show as unknown
+                return ">7 days"
+
+        df['idle_time'] = df.apply(calculate_idle_time, axis=1)
 
         # Add color coding for map
         def get_color(status):
@@ -2003,21 +2041,29 @@ def show_status_summary(df):
         # First, show LIVE ALERT for vehicles currently running at night
         if is_night_time:
             live_query = """
-                SELECT DISTINCT
-                    f.vehicle_no,
-                    f.speed,
-                    f.location,
-                    f.date_time,
-                    CASE
-                        WHEN f.vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(f.vehicle_no, ' ', 2) || SPLIT_PART(f.vehicle_no, ' ', 1)
-                        ELSE f.vehicle_no
-                    END as normalized_vehicle_no
-                FROM fvts_vehicles f
-                WHERE f.speed > 0
-                    AND f.ignition = 1
-                    AND f.date_time >= NOW() - INTERVAL '10 minutes'
-                ORDER BY f.speed DESC
+                SELECT DISTINCT ON (normalized_vehicle_no)
+                    vehicle_no,
+                    speed,
+                    location,
+                    date_time,
+                    normalized_vehicle_no
+                FROM (
+                    SELECT
+                        f.vehicle_no,
+                        f.speed,
+                        f.location,
+                        f.date_time,
+                        UPPER(CASE
+                            WHEN f.vehicle_no LIKE '% %' THEN
+                                SPLIT_PART(f.vehicle_no, ' ', 2) || SPLIT_PART(f.vehicle_no, ' ', 1)
+                            ELSE f.vehicle_no
+                        END) as normalized_vehicle_no
+                    FROM fvts_vehicles f
+                    WHERE f.speed > 0
+                        AND f.ignition = 1
+                        AND f.date_time >= NOW() - INTERVAL '10 minutes'
+                ) sub
+                ORDER BY normalized_vehicle_no, date_time DESC
             """
             live_df = pd.read_sql_query(live_query, connection)
 
@@ -2814,6 +2860,213 @@ def show_overspeed_alerts(df):
     except Exception as e:
         st.error(f"Error loading overspeed data: {str(e)}")
 
+@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
+def get_driver_home_data():
+    """Get driver home addresses from Swift Driver Address.xls file"""
+    try:
+        excel_path = os.path.join(os.path.dirname(__file__), 'Swift Driver Address.xls')
+        driver_df = pd.read_excel(excel_path)
+
+        # Rename columns to match expected format
+        driver_df = driver_df.rename(columns={
+            'Code': 'driver_code',
+            'Name': 'driver_name',
+            'PrintingAddress': 'present_address',
+            'State': 'state',
+            'City': 'city'
+        })
+
+        # Filter out rows without address
+        driver_df = driver_df[
+            (driver_df['driver_code'].notna()) &
+            (driver_df['present_address'].notna()) &
+            (driver_df['present_address'] != '')
+        ]
+
+        return driver_df[['driver_code', 'driver_name', 'present_address', 'state', 'city']]
+    except Exception as e:
+        return pd.DataFrame()
+
+def check_driver_at_home(vehicle_location, driver_address, state=None, city=None):
+    """Check if vehicle location matches driver's home address or city"""
+    if not vehicle_location:
+        return False
+
+    # Normalize strings for comparison
+    vehicle_loc = str(vehicle_location).lower().strip()
+    driver_addr = str(driver_address).lower().strip() if pd.notna(driver_address) else ''
+    city_str = str(city).lower().strip() if pd.notna(city) else ''
+
+    # Exclude state names and common generic location words
+    exclude_words = {
+        # State names
+        'uttar', 'pradesh', 'madhya', 'bihar', 'rajasthan', 'haryana', 'punjab', 'gujarat',
+        'maharashtra', 'karnataka', 'tamil', 'nadu', 'kerala', 'west', 'bengal', 'odisha',
+        'andhra', 'telangana', 'assam', 'chhattisgarh', 'jharkhand', 'uttarakhand',
+        'himachal', 'jammu', 'kashmir', 'goa', 'sikkim', 'tripura', 'meghalaya', 'manipur',
+        'mizoram', 'nagaland', 'arunachal', 'india', 'state',
+        # Common generic words
+        'road', 'highway', 'national', 'unnamed', 'urban', 'rural', 'near', 'opposite',
+        'vill', 'village', 'post', 'dist', 'distt', 'district', 'tehsil', 'block',
+        'ward', 'code', 'pincode'
+    }
+
+    # First: Check if any word from driver address matches current location
+    if driver_addr:
+        addr_words = [w.strip(',-./\n').lower() for w in driver_addr.split() if len(w.strip(',-./\n')) > 3]
+        # Filter out state names and common generic words
+        addr_places = [w for w in addr_words if w not in exclude_words]
+
+        for place in addr_places:
+            if place in vehicle_loc:
+                return True
+
+    # Second: Check if city name matches
+    if city_str and len(city_str) > 2:
+        if city_str in vehicle_loc:
+            return True
+
+    return False
+
+def show_driver_at_home(df):
+    """Show drivers who are currently at their home location"""
+    import streamlit.components.v1 as components
+
+    st.subheader("🏠 Driver at Home")
+
+    try:
+        # Get driver home addresses from Excel file
+        driver_home_df = get_driver_home_data()
+
+        if len(driver_home_df) == 0:
+            st.info("No driver home address data available.")
+            return
+
+        # Use the same load details data as Load Details tab (for driver info)
+        load_df = load_vehicle_load_details()
+
+        if len(load_df) == 0:
+            st.info("No load details data available.")
+            return
+
+        # Merge load_df with main df to get speed and location
+        # Main df has: speed, location columns
+        # load_df has: driver_name, driver_code, driver_phone_no
+        merged_vehicle_df = load_df.merge(
+            df[['vehicle_no', 'speed', 'location']],
+            on='vehicle_no',
+            how='left'
+        )
+
+        # Filter for stationary/idle vehicles with drivers assigned
+        vehicle_driver_df = merged_vehicle_df[
+            (merged_vehicle_df['speed'].fillna(0) <= 5) &
+            (merged_vehicle_df['driver_code'].notna()) &
+            (merged_vehicle_df['driver_code'] != '') &
+            (merged_vehicle_df['driver_code'] != '-')
+        ].copy()
+
+        if len(vehicle_driver_df) == 0:
+            st.info("No stationary vehicles with assigned drivers found.")
+            return
+
+        # Merge with driver home addresses from Excel file
+        vehicle_driver_df['driver_code_upper'] = vehicle_driver_df['driver_code'].astype(str).str.upper().str.strip()
+        driver_home_df['driver_code_upper'] = driver_home_df['driver_code'].astype(str).str.upper().str.strip()
+
+        merged_df = vehicle_driver_df.merge(
+            driver_home_df[['driver_code_upper', 'present_address', 'state', 'city']],
+            on='driver_code_upper',
+            how='left'
+        )
+
+        # Check which drivers are at home
+        drivers_at_home = []
+        for _, row in merged_df.iterrows():
+            location = row.get('location', '')
+            if pd.notna(row.get('present_address')) and pd.notna(location) and location:
+                if check_driver_at_home(location, row['present_address'], row.get('state'), row.get('city')):
+                    drivers_at_home.append(row)
+
+        if len(drivers_at_home) == 0:
+            st.success("✅ No drivers currently at home. All drivers are on duty!")
+
+            # Show all stationary vehicles with drivers for reference
+            st.markdown("---")
+            st.subheader("📋 Stationary Vehicles with Drivers")
+            st.info(f"Showing {len(merged_df)} stationary vehicles (speed <= 5)")
+
+            display_cols = ['vehicle_no', 'driver_name', 'driver_code', 'driver_phone_no', 'location', 'party']
+            available_cols = [c for c in display_cols if c in merged_df.columns]
+            display_df = merged_df[available_cols].copy()
+            display_df.columns = ['Vehicle No', 'Driver Name', 'Driver Code', 'Phone', 'Current Location', 'Party'][:len(available_cols)]
+            st.dataframe(display_df, use_container_width=True, height=400)
+            return
+
+        # Create dataframe of drivers at home
+        at_home_df = pd.DataFrame(drivers_at_home)
+
+        st.warning(f"⚠️ **{len(at_home_df)} driver(s) detected at home location!**")
+
+        # Display table
+        alert_html = '''
+        <style>
+            .home-alert-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+            .home-alert-table th { background-color: #ff9800; color: white; padding: 10px; text-align: center; }
+            .home-alert-table td { background-color: #fff3e0; color: #000; padding: 8px; border: 1px solid #ffcc80; }
+            .home-alert-table td.center { text-align: center; }
+            .home-alert-table td.vehicle { text-align: center; font-weight: bold; color: #e65100; }
+        </style>
+        <table class="home-alert-table">
+        <tr><th>Vehicle No</th><th>Driver Name</th><th>Driver Code</th><th>Phone</th><th>Current Location</th><th>Home Address</th><th>Party</th></tr>
+        '''
+
+        for row in drivers_at_home:
+            driver_name = row.get('driver_name', '-') or '-'
+            driver_code = row.get('driver_code', '-') or '-'
+            phone = row.get('driver_phone_no', '-') or '-'
+            location = row.get('location', '-') or '-'
+            current_loc = str(location)
+            # Clean home address - remove phone numbers
+            home_addr = str(row.get('present_address', '-')) if row.get('present_address') else '-'
+            # Remove patterns like "PH - 1234567890", "Driver Ph - 1234567890", standalone numbers
+            import re
+            home_addr = re.sub(r'\s*(Driver\s*)?(Ph|PH|Phone)\s*[-:.]?\s*\d{7,12}', '', home_addr)
+            home_addr = re.sub(r'\s+\d{10,12}(-\w+)?', '', home_addr)  # Remove standalone phone numbers
+            home_addr = re.sub(r'\s*Home\s*$', '', home_addr)  # Remove trailing "Home"
+            home_addr = re.sub(r'\s*-BRO\s*$', '', home_addr)  # Remove trailing "-BRO"
+            home_addr = re.sub(r'\s{2,}', ' ', home_addr).strip()  # Clean extra spaces
+            party = row.get('party', '-') or '-'
+
+            alert_html += f'''<tr>
+                <td class="vehicle">{row['vehicle_no']}</td>
+                <td>{driver_name}</td>
+                <td class="center">{driver_code}</td>
+                <td class="center">{phone}</td>
+                <td>{current_loc}</td>
+                <td>{home_addr}</td>
+                <td>{party}</td>
+            </tr>'''
+
+        alert_html += '</table>'
+        components.html(alert_html, height=min(300, 60 + len(drivers_at_home) * 45), scrolling=True)
+
+        # Legend
+        st.markdown("---")
+        st.markdown("""
+        <div style="background-color: #1a1a2e; padding: 12px 15px; border-radius: 5px; border-left: 4px solid #ff9800;">
+        <b style="color: #ff9800;">Detection Logic:</b><br>
+        <span style="color: #ccc; font-size: 13px;">
+        • Compares vehicle's current GPS location with driver's registered home address<br>
+        • Only checks stationary vehicles (speed = 0)<br>
+        • Match is based on location keywords (city, district, area names)
+        </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    except Exception as e:
+        st.error(f"Error loading driver at home data: {str(e)}")
+
 def show_nearby_vehicles(df, search_lat, search_lon, radius):
     """Show vehicles near a specific location"""
 
@@ -3061,9 +3314,9 @@ def main():
 
     # Tabs
     if enable_nearby_search and search_lat and search_lon:
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🗺️ Live Map", "📍 Nearby Vehicles", "📋 Live Vehicle Details", "🚚 Load Details", "🌙 Night Driving", "⚠️ Overspeed"])
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["🗺️ Live Map", "📍 Nearby Vehicles", "📋 Live Vehicle Details", "🚚 Load Details", "🌙 Night Driving", "⚠️ Overspeed", "🏠 Driver at Home"])
     else:
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["🗺️ Live Map", "📋 Live Vehicle Details", "🚚 Load Details", "🌙 Night Driving", "⚠️ Overspeed"])
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🗺️ Live Map", "📋 Live Vehicle Details", "🚚 Load Details", "🌙 Night Driving", "⚠️ Overspeed", "🏠 Driver at Home"])
 
     with tab1:
         st.subheader("🗺️ Swift Live Vehicle Locations")
@@ -3160,6 +3413,9 @@ def main():
 
         with tab6:
             show_overspeed_alerts(filtered_df)
+
+        with tab7:
+            show_driver_at_home(filtered_df)
     else:
         with tab2:
             show_vehicle_list(filtered_df)
@@ -3172,6 +3428,9 @@ def main():
 
         with tab5:
             show_overspeed_alerts(filtered_df)
+
+        with tab6:
+            show_driver_at_home(filtered_df)
 
     # Footer
     st.markdown("---")
