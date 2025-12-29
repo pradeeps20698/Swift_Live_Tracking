@@ -26,6 +26,27 @@ st.set_page_config(
 # Custom CSS
 st.markdown("""
 <style>
+    /* Hide loading spinner and prevent screen flash during auto-refresh */
+    .stSpinner, [data-testid="stStatusWidget"] {
+        display: none !important;
+    }
+
+    /* Prevent page content from disappearing during refresh */
+    .main .block-container {
+        opacity: 1 !important;
+        visibility: visible !important;
+    }
+
+    /* Hide the "Running..." status */
+    [data-testid="stAppViewBlockContainer"] {
+        opacity: 1 !important;
+    }
+
+    /* Smooth transitions to prevent jarring updates */
+    .element-container, .stMarkdown, .stDataFrame {
+        transition: none !important;
+    }
+
     .main-header {
         font-size: 2.5rem;
         font-weight: bold;
