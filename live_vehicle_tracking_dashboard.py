@@ -3230,10 +3230,11 @@ def main():
     """, unsafe_allow_html=True)
     st.markdown('<p style="text-align: center; font-size: 1.1rem; margin-top: -15px; margin-bottom: 0;"><strong>Real-time Vehicle Location & Status Monitoring</strong></p>', unsafe_allow_html=True)
 
-    # Silent auto-refresh every 60 seconds (60000 ms) for live alerts - main data stays cached for 10 minutes
+    # Auto-refresh every 60 seconds for live alerts
+    # Main vehicle data stays cached for 10 minutes to minimize screen disruption
     st_autorefresh(interval=60000, limit=None, key="vehicle_data_refresh")
 
-    # Load data silently (no spinner during auto-refresh)
+    # Load data (cached for 10 minutes - won't reload on every auto-refresh)
     df = load_vehicle_data()
 
     if len(df) == 0:
@@ -3477,7 +3478,7 @@ def main():
     st.markdown("---")
     st.markdown(
         f"<p style='text-align: center; color: gray;'>Swift Live Tracking Dashboard | "
-        f"Data Source: FVTS_VEHICLES Database | Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Auto-refresh: 30s (Alerts) / 10 min (Main Data)</p>",
+        f"Data Source: FVTS_VEHICLES Database | Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Auto-refresh: 60s (Alerts) / 10 min (Main Data)</p>",
         unsafe_allow_html=True
     )
 
