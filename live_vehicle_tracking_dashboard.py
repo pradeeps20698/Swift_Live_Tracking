@@ -10,6 +10,7 @@ import os
 from geopy.geocoders import Nominatim
 from streamlit_autorefresh import st_autorefresh
 from dotenv import load_dotenv
+import pytz
 
 # Load environment variables from .env file
 load_dotenv()
@@ -457,11 +458,23 @@ def show_overview_metrics(df):
     stopped = len(df[df['status'] == 'Stopped'])
     avg_speed = float(df['speed'].mean()) if 'speed' in df.columns else 0
 
+    # Calculate vehicle bifurcation by owner
+    own_vehicles = len(df[df['owner_name'] == 'Own Vehicle']) if 'owner_name' in df.columns else 0
+    swaraj_vehicles = len(df[df['owner_name'].str.contains('SWARAJ', case=False, na=False)]) if 'owner_name' in df.columns else 0
+    mohan_vehicles = len(df[df['owner_name'] == 'Mohan Logistics']) if 'owner_name' in df.columns else 0
+    other_vehicles = total_vehicles - own_vehicles - swaraj_vehicles - mohan_vehicles
+
     with col1:
         st.metric(
             label="🚛 Total Vehicles",
             value=f"{total_vehicles:,}"
         )
+        # Show bifurcation below total
+        st.markdown(f"""
+        <div style="font-size: 0.75rem; color: #888; margin-top: -10px; line-height: 1.4;">
+            Own: {own_vehicles} | Swaraj: {swaraj_vehicles} | Mohan: {mohan_vehicles} | Others: {other_vehicles}
+        </div>
+        """, unsafe_allow_html=True)
 
     with col2:
         st.metric(
@@ -2367,19 +2380,14 @@ def show_status_summary(df):
             except:
                 pass
 
-def show_overspeed_alerts(df):
-    """Show overspeed alerts - vehicles with speed > 60 km/h for duration >= 1 minute"""
-    import streamlit.components.v1 as components
-    from datetime import datetime
-
-    st.subheader("🚨 Overspeed Alerts (Speed > 60 km/h)")
-
-    # Get overspeed data from database
+@st.cache_data(ttl=120, show_spinner=False)  # Cache for 2 minutes
+def get_overspeed_data():
+    """Cached function to get overspeed data from database"""
     connection = None
     try:
         connection = get_database_connection()
 
-        # Query to find vehicles with overspeed (>60 km/h) - count total overspeed records
+        # Query for 24h overspeed summary
         query = """
             WITH overspeed_data AS (
                 SELECT
@@ -2460,10 +2468,11 @@ def show_overspeed_alerts(df):
             )
             SELECT
                 os.vehicle_no,
+                os.normalized_vehicle_no,
                 COALESCE(di.driver_name, '-') as driver_name,
                 COALESCE(di.driver_code, '-') as driver_code,
                 COALESCE(di.driver_phone_no, '-') as driver_phone,
-                ROUND(os.max_speed::numeric, 0) as max_speed,
+                os.max_speed,
                 ROUND(os.avg_speed::numeric, 0) as avg_speed,
                 os.first_overspeed,
                 os.last_overspeed,
@@ -2473,13 +2482,9 @@ def show_overspeed_alerts(df):
             LEFT JOIN driver_info di ON os.normalized_vehicle_no = di.normalized_vehicle_no
             ORDER BY os.overspeed_times DESC, os.max_speed DESC;
         """
-
         overspeed_df = pd.read_sql_query(query, connection)
 
-        # Also get current overspeeding vehicles (live alert)
-        # Logic: Latest entry speed > 60 AND (current_time - entry_time) >= 1 minute
-        # Duration = current_time - entry_time (how long since that overspeed entry was recorded)
-        # Note: Data is stored in IST, so use NOW() AT TIME ZONE 'Asia/Kolkata'
+        # Live overspeed query with driver info from swift_trip_log
         live_query = """
             WITH latest_records AS (
                 SELECT DISTINCT ON (vehicle_no)
@@ -2495,28 +2500,21 @@ def show_overspeed_alerts(df):
                     ignition
                 FROM fvts_vehicles
                 ORDER BY vehicle_no, date_time DESC
-            )
-            SELECT
-                vehicle_no,
-                normalized_vehicle_no,
-                speed,
-                location,
-                EXTRACT(EPOCH FROM ((NOW() AT TIME ZONE 'Asia/Kolkata') - date_time))/60 as duration_mins,
-                date_time
-            FROM latest_records
-            WHERE speed > 60
-                AND ignition = 1
-                AND EXTRACT(EPOCH FROM ((NOW() AT TIME ZONE 'Asia/Kolkata') - date_time))/60 >= 1
-            ORDER BY duration_mins DESC, speed DESC
-        """
-        live_overspeed_df = pd.read_sql_query(live_query, connection)
-
-        # Show live alert if there are currently overspeeding vehicles
-        if len(live_overspeed_df) > 0:
-            st.error(f"🚨 **LIVE ALERT: {len(live_overspeed_df)} vehicles CURRENTLY overspeeding (>60 km/h)!**")
-
-            # Get driver info for live vehicles
-            driver_query = """
+            ),
+            overspeed_vehicles AS (
+                SELECT
+                    vehicle_no,
+                    normalized_vehicle_no,
+                    speed,
+                    location,
+                    EXTRACT(EPOCH FROM ((NOW() AT TIME ZONE 'Asia/Kolkata') - date_time))/60 as duration_mins,
+                    date_time
+                FROM latest_records
+                WHERE speed > 60
+                    AND ignition = 1
+                    AND EXTRACT(EPOCH FROM ((NOW() AT TIME ZONE 'Asia/Kolkata') - date_time))/60 >= 1
+            ),
+            driver_info AS (
                 SELECT DISTINCT ON (normalized_vehicle_no)
                     UPPER(CASE
                         WHEN vehicle_no LIKE '% %' THEN
@@ -2555,21 +2553,55 @@ def show_overspeed_alerts(df):
                         ELSE vehicle_no
                     END),
                     loading_date DESC NULLS LAST
-            """
-            driver_df = pd.read_sql_query(driver_query, connection)
+            )
+            SELECT
+                ov.vehicle_no,
+                ov.normalized_vehicle_no,
+                ov.speed,
+                ov.location,
+                ov.duration_mins,
+                ov.date_time,
+                COALESCE(di.driver_name, '-') as driver_name,
+                COALESCE(di.driver_code, '-') as driver_code,
+                COALESCE(di.driver_phone_no, '-') as driver_phone_no
+            FROM overspeed_vehicles ov
+            LEFT JOIN driver_info di ON ov.normalized_vehicle_no = di.normalized_vehicle_no
+            ORDER BY ov.duration_mins DESC, ov.speed DESC
+        """
+        live_overspeed_df = pd.read_sql_query(live_query, connection)
 
-            # Merge driver info
-            live_overspeed_df = live_overspeed_df.merge(driver_df, on='normalized_vehicle_no', how='left')
-            live_overspeed_df['driver_name'] = live_overspeed_df['driver_name'].fillna('-')
-            live_overspeed_df['driver_code'] = live_overspeed_df['driver_code'].fillna('-')
-            live_overspeed_df['driver_phone_no'] = live_overspeed_df['driver_phone_no'].fillna('-')
+        return overspeed_df, live_overspeed_df
+    except Exception as e:
+        return pd.DataFrame(), pd.DataFrame()
+    finally:
+        if connection:
+            try:
+                connection.close()
+            except:
+                pass
 
-            # Merge owner info
+def show_overspeed_alerts(df):
+    """Show overspeed alerts - vehicles with speed > 60 km/h for duration >= 1 minute"""
+    import streamlit.components.v1 as components
+    from datetime import datetime
+
+    st.subheader("🚨 Overspeed Alerts (Speed > 60 km/h)")
+
+    # Get overspeed data from CACHED function (fast!)
+    overspeed_df, live_overspeed_df = get_overspeed_data()
+
+    try:
+
+        # Show live alert if there are currently overspeeding vehicles
+        if len(live_overspeed_df) > 0:
+            st.error(f"🚨 **LIVE ALERT: {len(live_overspeed_df)} vehicles CURRENTLY overspeeding (>60 km/h)!**")
+
+            # Merge owner info (from cached Excel - fast)
             owner_df = load_owner_mapping()
             live_overspeed_df = live_overspeed_df.merge(owner_df, on='normalized_vehicle_no', how='left')
             live_overspeed_df['owner_name'] = live_overspeed_df['owner_name'].fillna('-')
 
-            # Display live alert table with duration
+            # Display live alert table with driver info
             alert_html = '''
             <style>
                 .overspeed-alert-table { width: 100%; border-collapse: collapse; font-size: 13px; animation: blink 1s infinite; }
@@ -2584,7 +2616,11 @@ def show_overspeed_alerts(df):
             <tr><th>Vehicle No</th><th>Driver (Code)</th><th>Phone</th><th>Speed</th><th>Duration</th><th>Location</th><th>Owner Name</th></tr>
             '''
             for _, row in live_overspeed_df.iterrows():
-                driver = f"{row['driver_name']} ({row['driver_code']})" if row['driver_name'] != '-' else '-'
+                # Format driver info
+                driver_name = row.get('driver_name', '-') or '-'
+                driver_code = row.get('driver_code', '-') or '-'
+                driver_phone = row.get('driver_phone_no', '-') or '-'
+                driver = f"{driver_name} ({driver_code})" if driver_name != '-' else '-'
                 # Format duration
                 dur_mins = row.get('duration_mins', 0) or 0
                 if dur_mins < 60:
@@ -2596,7 +2632,7 @@ def show_overspeed_alerts(df):
                 alert_html += f'''<tr>
                     <td class="center"><b>{row['vehicle_no']}</b></td>
                     <td>{driver}</td>
-                    <td class="center">{row['driver_phone_no']}</td>
+                    <td class="center">{driver_phone}</td>
                     <td class="speed">{row['speed']} km/h</td>
                     <td class="duration">{duration_str}</td>
                     <td>{row['location'] if row['location'] else '-'}</td>
@@ -2777,12 +2813,6 @@ def show_overspeed_alerts(df):
 
     except Exception as e:
         st.error(f"Error loading overspeed data: {str(e)}")
-    finally:
-        if connection:
-            try:
-                connection.close()
-            except:
-                pass
 
 def show_nearby_vehicles(df, search_lat, search_lon, radius):
     """Show vehicles near a specific location"""
@@ -2989,6 +3019,40 @@ def main():
         filtered_df = filtered_df[
             filtered_df['vehicle_no'].str.contains(vehicle_search, case=False, na=False)
         ]
+
+    # Show live alert notification on top-right (using cached overspeed data - same as Overspeed tab)
+    _, live_overspeed_df = get_overspeed_data()
+    overspeed_count = len(live_overspeed_df)
+    if overspeed_count > 0:
+        st.markdown(f"""
+        <style>
+            .alert-badge {{
+                position: fixed;
+                top: 70px;
+                right: 20px;
+                background: linear-gradient(135deg, #ff5722, #d32f2f);
+                color: white;
+                padding: 8px 15px;
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: bold;
+                z-index: 9999;
+                box-shadow: 0 4px 15px rgba(255, 87, 34, 0.4);
+                animation: pulse-alert 2s infinite;
+                cursor: pointer;
+            }}
+            .alert-badge:hover {{
+                transform: scale(1.05);
+            }}
+            @keyframes pulse-alert {{
+                0%, 100% {{ opacity: 1; box-shadow: 0 4px 15px rgba(255, 87, 34, 0.4); }}
+                50% {{ opacity: 0.9; box-shadow: 0 4px 25px rgba(255, 87, 34, 0.7); }}
+            }}
+        </style>
+        <div class="alert-badge">
+            🚨 {overspeed_count} Overspeeding → ⚠️ Overspeed
+        </div>
+        """, unsafe_allow_html=True)
 
     # Display metrics
     show_overview_metrics(filtered_df)
