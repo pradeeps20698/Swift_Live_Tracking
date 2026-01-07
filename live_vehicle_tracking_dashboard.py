@@ -15,6 +15,20 @@ import pytz
 # Load environment variables from .env file
 load_dotenv()
 
+# Vehicles to exclude from the dashboard (normalized format - uppercase, no spaces/dashes)
+EXCLUDED_VEHICLES = [
+    'NL01AB2275',
+]
+
+# Custom owner name mappings (normalized vehicle_no -> owner_name)
+CUSTOM_OWNER_MAPPING = {
+    'HR55AM1370': 'Ranjeet Singh Logistics',
+    'HR55AP1974': 'Ranjeet Singh Logistics',
+    'HR55AM9667': 'Ranjeet Singh Logistics',
+    'HR55AM2340': 'Ranjeet Singh Logistics',
+    'NL01Q8157': 'Ranjeet Singh Logistics',
+}
+
 # Page config
 st.set_page_config(
     page_title="Swift Live Tracking",
@@ -284,6 +298,14 @@ def load_vehicle_data():
 
         df = pd.read_sql_query(query, connection)
 
+        # Filter out excluded vehicles
+        if EXCLUDED_VEHICLES:
+            df['normalized_vehicle'] = df['vehicle_no'].apply(
+                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+            )
+            df = df[~df['normalized_vehicle'].isin(EXCLUDED_VEHICLES)]
+            df = df.drop(columns=['normalized_vehicle'])
+
         # Convert timestamps
         if 'date_time' in df.columns:
             df['date_time'] = pd.to_datetime(df['date_time'], errors='coerce')
@@ -494,6 +516,11 @@ def load_vehicle_data():
                 lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
             )
             df = df.merge(owner_df, on='normalized_vehicle_no', how='left')
+            # Apply custom owner mappings
+            df['owner_name'] = df.apply(
+                lambda row: CUSTOM_OWNER_MAPPING.get(row['normalized_vehicle_no'], row['owner_name']),
+                axis=1
+            )
             df = df.drop(columns=['normalized_vehicle_no'], errors='ignore')
             df['owner_name'] = df['owner_name'].fillna('-')
         except Exception as e:
@@ -532,8 +559,8 @@ def show_overview_metrics(df):
     # Calculate vehicle bifurcation by owner
     own_vehicles = len(df[df['owner_name'] == 'Own Vehicle']) if 'owner_name' in df.columns else 0
     swaraj_vehicles = len(df[df['owner_name'].str.contains('SWARAJ', case=False, na=False)]) if 'owner_name' in df.columns else 0
-    mohan_vehicles = len(df[df['owner_name'] == 'Mohan Logistics']) if 'owner_name' in df.columns else 0
-    other_vehicles = total_vehicles - own_vehicles - swaraj_vehicles - mohan_vehicles
+    ranjeet_vehicles = len(df[df['owner_name'] == 'Ranjeet Singh Logistics']) if 'owner_name' in df.columns else 0
+    other_vehicles = total_vehicles - own_vehicles - swaraj_vehicles - ranjeet_vehicles
 
     with col1:
         st.metric(
@@ -543,7 +570,7 @@ def show_overview_metrics(df):
         # Show bifurcation below total
         st.markdown(f"""
         <div style="font-size: 0.75rem; color: #888; margin-top: -10px; line-height: 1.4;">
-            Own: {own_vehicles} | Swaraj: {swaraj_vehicles} | Mohan: {mohan_vehicles} | Others: {other_vehicles}
+            Own: {own_vehicles} | Swaraj: {swaraj_vehicles} | Ranjeet: {ranjeet_vehicles} | Others: {other_vehicles}
         </div>
         """, unsafe_allow_html=True)
 
@@ -1199,6 +1226,14 @@ def load_vehicle_load_details():
 
         df = pd.read_sql_query(query, connection)
 
+        # Filter out excluded vehicles
+        if EXCLUDED_VEHICLES:
+            df['normalized_vehicle'] = df['vehicle_no'].apply(
+                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+            )
+            df = df[~df['normalized_vehicle'].isin(EXCLUDED_VEHICLES)]
+            df = df.drop(columns=['normalized_vehicle'])
+
         # Convert timestamps
         for col in ['lr_date', 'trip_start_date', 'trip_end_date', 'loading_date', 'unloading_date', 'created_at']:
             if col in df.columns:
@@ -1217,8 +1252,17 @@ def load_vehicle_load_details():
                 lambda x: 'Own Vehicle' if x in ['Swift Road Link Pvt. Ltd.', 'Nishant Saini Associates'] else x
             )
             owner_df = owner_df[['normalized_vehicle_no', 'owner_name']]
-            df = df.merge(owner_df, left_on='vehicle_no', right_on='normalized_vehicle_no', how='left')
-            df = df.drop(columns=['normalized_vehicle_no'], errors='ignore')
+            # Normalize vehicle_no in df for matching
+            df['normalized_vehicle_no_temp'] = df['vehicle_no'].apply(
+                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+            )
+            df = df.merge(owner_df, left_on='normalized_vehicle_no_temp', right_on='normalized_vehicle_no', how='left')
+            # Apply custom owner mappings
+            df['owner_name'] = df.apply(
+                lambda row: CUSTOM_OWNER_MAPPING.get(row['normalized_vehicle_no_temp'], row['owner_name']),
+                axis=1
+            )
+            df = df.drop(columns=['normalized_vehicle_no', 'normalized_vehicle_no_temp'], errors='ignore')
         except Exception as e:
             # If Excel file doesn't exist or read fails, just add empty owner_name column
             df['owner_name'] = None
@@ -2155,6 +2199,11 @@ def show_status_summary(df):
                 # Merge owner info
                 owner_df = load_owner_mapping()
                 live_df = live_df.merge(owner_df, on='normalized_vehicle_no', how='left')
+                # Apply custom owner mappings
+                live_df['owner_name'] = live_df.apply(
+                    lambda row: CUSTOM_OWNER_MAPPING.get(row['normalized_vehicle_no'], row['owner_name']),
+                    axis=1
+                )
                 live_df['owner_name'] = live_df['owner_name'].fillna('-')
 
                 # Display live alert table
@@ -2320,6 +2369,11 @@ def show_status_summary(df):
             lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
         )
         night_df = night_df.merge(owner_df, on='normalized_vehicle_no', how='left')
+        # Apply custom owner mappings
+        night_df['owner_name'] = night_df.apply(
+            lambda row: CUSTOM_OWNER_MAPPING.get(row['normalized_vehicle_no'], row['owner_name']),
+            axis=1
+        )
         night_df['owner_name'] = night_df['owner_name'].fillna('-')
 
         # Display count
@@ -2678,6 +2732,11 @@ def show_overspeed_alerts(df):
             # Merge owner info (from cached Excel - fast)
             owner_df = load_owner_mapping()
             live_overspeed_df = live_overspeed_df.merge(owner_df, on='normalized_vehicle_no', how='left')
+            # Apply custom owner mappings
+            live_overspeed_df['owner_name'] = live_overspeed_df.apply(
+                lambda row: CUSTOM_OWNER_MAPPING.get(row['normalized_vehicle_no'], row['owner_name']),
+                axis=1
+            )
             live_overspeed_df['owner_name'] = live_overspeed_df['owner_name'].fillna('-')
 
             # Display live alert table with driver info
@@ -2738,6 +2797,11 @@ def show_overspeed_alerts(df):
             lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
         )
         overspeed_df = overspeed_df.merge(owner_df, on='normalized_vehicle_no', how='left')
+        # Apply custom owner mappings
+        overspeed_df['owner_name'] = overspeed_df.apply(
+            lambda row: CUSTOM_OWNER_MAPPING.get(row['normalized_vehicle_no'], row['owner_name']),
+            axis=1
+        )
         overspeed_df['owner_name'] = overspeed_df['owner_name'].fillna('-')
 
         st.warning(f"⚠️ **{len(overspeed_df)} vehicles** had overspeed incidents in the last 24 hours")
@@ -2949,22 +3013,33 @@ def check_driver_at_home(vehicle_location, driver_address, state=None, city=None
         # Common generic words
         'road', 'highway', 'national', 'unnamed', 'urban', 'rural', 'near', 'opposite',
         'vill', 'village', 'post', 'dist', 'distt', 'district', 'tehsil', 'block',
-        'ward', 'code', 'pincode'
+        'ward', 'code', 'pincode', 'town', 'township', 'sector', 'phase', 'plot',
+        # Short words that cause false matches (e.g., "tara" matches "uttarakhand")
+        'tara', 'nagar', 'pur', 'pur', 'ganj', 'pura', 'abad', 'garh', 'wala', 'wali',
+        'khan', 'singh', 'kumar', 'devi', 'lal', 'ram', 'shah', 'ali', 'mohd', 'mohammad',
+        'house', 'home', 'flat', 'floor', 'building', 'colony', 'society', 'apartment',
+        'lane', 'gali', 'mohalla', 'para', 'tola', 'basti', 'chowk', 'main', 'market',
+        'muslim', 'hindu', 'sikh', 'christian', 'temple', 'masjid', 'church', 'gurudwara'
     }
 
     # First: Check if any word from driver address matches current location
+    # Require minimum 5 characters to avoid false matches
     if driver_addr:
-        addr_words = [w.strip(',-./\n').lower() for w in driver_addr.split() if len(w.strip(',-./\n')) > 3]
+        addr_words = [w.strip(',-./\n').lower() for w in driver_addr.split() if len(w.strip(',-./\n')) >= 5]
         # Filter out state names and common generic words
         addr_places = [w for w in addr_words if w not in exclude_words]
 
         for place in addr_places:
-            if place in vehicle_loc:
+            # Use word boundary matching to avoid partial matches
+            # Check if place appears as a complete word in location
+            import re
+            if re.search(r'\b' + re.escape(place) + r'\b', vehicle_loc):
                 return True
 
-    # Second: Check if city name matches
-    if city_str and len(city_str) > 2:
-        if city_str in vehicle_loc:
+    # Second: Check if city name matches (must be at least 4 chars and exact word match)
+    if city_str and len(city_str) >= 4 and city_str not in exclude_words:
+        import re
+        if re.search(r'\b' + re.escape(city_str) + r'\b', vehicle_loc):
             return True
 
     return False
