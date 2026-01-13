@@ -233,7 +233,7 @@ def load_owner_mapping():
     except Exception as e:
         return pd.DataFrame(columns=['normalized_vehicle_no', 'owner_name'])
 
-@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
+@st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes
 def load_vehicle_data():
     """Load latest vehicle tracking data"""
     connection = None
@@ -1086,7 +1086,7 @@ def create_sparkline_svg(values, dates):
 
     return svg
 
-@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
+@st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes
 def load_vehicle_load_details():
     """Load ALL vehicles and map with their load details from swift_trip_log"""
     connection = None
@@ -1853,7 +1853,7 @@ def show_load_details():
         use_container_width=False
     )
 
-@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
+@st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes
 def load_trip_km_by_days_data():
     """Load trip data with daily GPS KM from loading date"""
     connection = None
@@ -2018,7 +2018,7 @@ def get_km_for_day(row, km_lookup, day_offset):
         return round(km_lookup[vehicle_no][target_date], 2)
     return 0
 
-@st.cache_data(ttl=120, show_spinner=False)  # Cache for 2 minutes
+@st.cache_data(ttl=60, show_spinner=False)  # Cache for 60 seconds
 def get_night_driving_live_data():
     """Cached function to get live night driving data"""
     connection = None
@@ -2128,7 +2128,7 @@ def get_night_driving_live_data():
             except:
                 pass
 
-@st.cache_data(ttl=120, show_spinner=False)  # Cache for 2 minutes
+@st.cache_data(ttl=60, show_spinner=False)  # Cache for 60 seconds
 def get_night_driving_summary_data():
     """Cached function to get last night's driving summary"""
     connection = None
@@ -2254,7 +2254,7 @@ def get_night_driving_summary_data():
             except:
                 pass
 
-@st.cache_data(ttl=120, show_spinner=False)  # Cache for 2 minutes
+@st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes
 def get_idle_time_data():
     """Cached function to get idle time data for all vehicles"""
     connection = None
@@ -2793,7 +2793,7 @@ def show_status_summary(df):
             except:
                 pass
 
-@st.cache_data(ttl=60, show_spinner=False)  # Cache for 1 minute
+@st.cache_data(ttl=60, show_spinner=False)  # Cache for 60 seconds
 def get_overspeed_data():
     """Cached function to get overspeed data from database"""
     connection = None
@@ -3727,6 +3727,113 @@ def show_nearby_vehicles(df, search_lat, search_lon, radius):
 
     return nearby_df
 
+# ============================================
+# Fragment Wrappers for Partial Page Refresh
+# ============================================
+
+@st.fragment(run_every=60)  # Refresh every 60 seconds
+def night_driving_fragment(df):
+    """Night Driving section with 60-second auto-refresh"""
+    show_status_summary(df)
+
+@st.fragment(run_every=60)  # Refresh every 60 seconds
+def overspeed_fragment(df):
+    """Overspeed section with 60-second auto-refresh"""
+    show_overspeed_alerts(df)
+
+@st.fragment(run_every=600)  # Refresh every 10 minutes
+def map_fragment(df):
+    """Map section with 10-minute auto-refresh"""
+    st.subheader("🗺️ Swift Live Vehicle Locations")
+    show_map(df)
+    st.markdown("""
+    **Legend:**
+    - 🟢 Green: Moving (Ignition ON, Speed >= 0)
+    - 🟠 Orange: Idle (Ignition OFF, Speed = 0)
+    - 🔴 Red: Stopped (No update for 6+ hours AND Ignition OFF)
+    """)
+
+@st.fragment(run_every=600)  # Refresh every 10 minutes
+def vehicle_list_fragment(df):
+    """Vehicle list section with 10-minute auto-refresh"""
+    show_vehicle_list(df)
+
+@st.fragment(run_every=600)  # Refresh every 10 minutes
+def load_details_fragment():
+    """Load details section with 10-minute auto-refresh"""
+    show_load_details()
+
+@st.fragment(run_every=600)  # Refresh every 10 minutes
+def driver_at_home_fragment(df):
+    """Driver at home section with 10-minute auto-refresh"""
+    show_driver_at_home(df)
+
+@st.fragment(run_every=600)  # Refresh every 10 minutes
+def nearby_vehicles_fragment(df, search_lat, search_lon, search_radius, search_location_name):
+    """Nearby vehicles section with 10-minute auto-refresh"""
+    if search_location_name:
+        st.info(f"📍 Searching near: **{search_location_name}**")
+    else:
+        st.info(f"📍 Searching near: **({search_lat:.6f}, {search_lon:.6f})**")
+
+    nearby_df = show_nearby_vehicles(df, search_lat, search_lon, search_radius)
+
+    if len(nearby_df) > 0:
+        st.markdown("---")
+        st.subheader("🗺️ Nearby Vehicles Map")
+
+        m = folium.Map(location=[search_lat, search_lon], zoom_start=10)
+
+        folium.Marker(
+            location=[search_lat, search_lon],
+            popup="Search Location",
+            tooltip="Search Center",
+            icon=folium.Icon(color='blue', icon='crosshairs', prefix='fa')
+        ).add_to(m)
+
+        folium.Circle(
+            location=[search_lat, search_lon],
+            radius=search_radius * 1000,
+            color='blue',
+            fill=True,
+            fillOpacity=0.1,
+            popup=f'{search_radius} km radius'
+        ).add_to(m)
+
+        for idx, row in nearby_df.iterrows():
+            if row['status'] == 'Moving':
+                color = 'green'
+                icon = 'play'
+            elif row['status'] == 'Idle':
+                color = 'orange'
+                icon = 'pause'
+            elif row['status'] == 'Stopped':
+                color = 'red'
+                icon = 'stop'
+            else:
+                color = 'gray'
+                icon = 'question'
+
+            popup_html = f"""
+            <div style="font-family: Arial; width: 250px;">
+                <h4 style="margin: 0; color: {color};">🚛 {row['vehicle_no']}</h4>
+                <hr style="margin: 5px 0;">
+                <p style="margin: 3px 0;"><b>Distance:</b> {row['distance_km']:.2f} km</p>
+                <p style="margin: 3px 0;"><b>Status:</b> <span style="color: {color};">{row['status']}</span></p>
+                <p style="margin: 3px 0;"><b>Speed:</b> {row['speed']} km/h</p>
+                <p style="margin: 3px 0;"><b>Location:</b> {row['location'] if pd.notna(row['location']) else '-'}</p>
+            </div>
+            """
+
+            folium.Marker(
+                location=[float(row['latitude']), float(row['longitude'])],
+                popup=folium.Popup(popup_html, max_width=300),
+                tooltip=f"{row['vehicle_no']} - {row['distance_km']:.2f} km",
+                icon=folium.Icon(color=color, icon=icon, prefix='fa')
+            ).add_to(m)
+
+        st_folium(m, width=1400, height=600, returned_objects=[])
+
 def main():
     """Main dashboard function"""
 
@@ -3751,9 +3858,9 @@ def main():
     """, unsafe_allow_html=True)
     st.markdown('<p style="text-align: center; font-size: 1.1rem; margin-top: -15px; margin-bottom: 0;"><strong>Real-time Vehicle Location & Status Monitoring</strong></p>', unsafe_allow_html=True)
 
-    # Auto-refresh every 60 seconds for live alerts
-    # Main vehicle data stays cached for 10 minutes to minimize screen disruption
-    st_autorefresh(interval=60000, limit=None, key="vehicle_data_refresh")
+    # Removed whole page auto-refresh - using st.fragment for partial refresh instead
+    # Night Driving and Overspeed refresh every 60 seconds
+    # Other sections refresh every 10 minutes
 
     # Load data (cached for 10 minutes - won't reload on every auto-refresh)
     df = load_vehicle_data()
@@ -3882,124 +3989,47 @@ def main():
         tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🗺️ Live Map", "📋 Live Vehicle Details", "🚚 Load Details", "🌙 Night Driving", "⚠️ Overspeed", "🏠 Driver at Home"])
 
     with tab1:
-        st.subheader("🗺️ Swift Live Vehicle Locations")
-        show_map(filtered_df)
-
-        # Legend
-        st.markdown("""
-        **Legend:**
-        - 🟢 Green: Moving (Ignition ON, Speed >= 0)
-        - 🟠 Orange: Idle (Ignition OFF, Speed = 0)
-        - 🔴 Red: Stopped (No update for 6+ hours AND Ignition OFF)
-        """)
+        map_fragment(filtered_df)
 
     if enable_nearby_search and search_lat and search_lon:
         with tab2:
-            # Display search location info
-            if search_location_name:
-                st.info(f"📍 Searching near: **{search_location_name}**")
-            else:
-                st.info(f"📍 Searching near: **({search_lat:.6f}, {search_lon:.6f})**")
-
-            # Show nearby vehicles
-            nearby_df = show_nearby_vehicles(df, search_lat, search_lon, search_radius)
-
-            # Show nearby vehicles on map
-            if len(nearby_df) > 0:
-                st.markdown("---")
-                st.subheader("🗺️ Nearby Vehicles Map")
-
-                # Create map centered on search location
-                m = folium.Map(location=[search_lat, search_lon], zoom_start=10)
-
-                # Add search location marker
-                folium.Marker(
-                    location=[search_lat, search_lon],
-                    popup="Search Location",
-                    tooltip="Search Center",
-                    icon=folium.Icon(color='blue', icon='crosshairs', prefix='fa')
-                ).add_to(m)
-
-                # Add circle showing search radius
-                folium.Circle(
-                    location=[search_lat, search_lon],
-                    radius=search_radius * 1000,  # Convert km to meters
-                    color='blue',
-                    fill=True,
-                    fillOpacity=0.1,
-                    popup=f'{search_radius} km radius'
-                ).add_to(m)
-
-                # Add vehicle markers
-                for idx, row in nearby_df.iterrows():
-                    if row['status'] == 'Moving':
-                        color = 'green'
-                        icon = 'play'
-                    elif row['status'] == 'Idle':
-                        color = 'orange'
-                        icon = 'pause'
-                    elif row['status'] == 'Stopped':
-                        color = 'red'
-                        icon = 'stop'
-                    else:
-                        color = 'gray'
-                        icon = 'question'
-
-                    popup_html = f"""
-                    <div style="font-family: Arial; width: 250px;">
-                        <h4 style="margin: 0; color: {color};">🚛 {row['vehicle_no']}</h4>
-                        <hr style="margin: 5px 0;">
-                        <p style="margin: 3px 0;"><b>Distance:</b> {row['distance_km']:.2f} km</p>
-                        <p style="margin: 3px 0;"><b>Status:</b> <span style="color: {color};">{row['status']}</span></p>
-                        <p style="margin: 3px 0;"><b>Speed:</b> {row['speed']} km/h</p>
-                        <p style="margin: 3px 0;"><b>Location:</b> {row['location'] if pd.notna(row['location']) else '-'}</p>
-                    </div>
-                    """
-
-                    folium.Marker(
-                        location=[float(row['latitude']), float(row['longitude'])],
-                        popup=folium.Popup(popup_html, max_width=300),
-                        tooltip=f"{row['vehicle_no']} - {row['distance_km']:.2f} km",
-                        icon=folium.Icon(color=color, icon=icon, prefix='fa')
-                    ).add_to(m)
-
-                st_folium(m, width=1400, height=600, returned_objects=[])
+            nearby_vehicles_fragment(df, search_lat, search_lon, search_radius, search_location_name)
 
         with tab3:
-            show_vehicle_list(filtered_df)
+            vehicle_list_fragment(filtered_df)
 
         with tab4:
-            show_load_details()
+            load_details_fragment()
 
         with tab5:
-            show_status_summary(filtered_df)
+            night_driving_fragment(filtered_df)
 
         with tab6:
-            show_overspeed_alerts(filtered_df)
+            overspeed_fragment(filtered_df)
 
         with tab7:
-            show_driver_at_home(filtered_df)
+            driver_at_home_fragment(filtered_df)
     else:
         with tab2:
-            show_vehicle_list(filtered_df)
+            vehicle_list_fragment(filtered_df)
 
         with tab3:
-            show_load_details()
+            load_details_fragment()
 
         with tab4:
-            show_status_summary(filtered_df)
+            night_driving_fragment(filtered_df)
 
         with tab5:
-            show_overspeed_alerts(filtered_df)
+            overspeed_fragment(filtered_df)
 
         with tab6:
-            show_driver_at_home(filtered_df)
+            driver_at_home_fragment(filtered_df)
 
     # Footer
     st.markdown("---")
     st.markdown(
         f"<p style='text-align: center; color: gray;'>Swift Live Tracking Dashboard | "
-        f"Data Source: FVTS_VEHICLES Database | Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Auto-refresh: 60s (Alerts) / 10 min (Main Data)</p>",
+        f"Data Source: FVTS_VEHICLES Database | Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Partial Refresh: Night Driving & Overspeed (60s) / Other Sections (10 min)</p>",
         unsafe_allow_html=True
     )
 
