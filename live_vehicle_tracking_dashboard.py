@@ -27,6 +27,10 @@ CUSTOM_OWNER_MAPPING = {
     'HR55AM9667': 'Ranjeet Singh Logistics',
     'HR55AM2340': 'Ranjeet Singh Logistics',
     'NL01Q8157': 'Ranjeet Singh Logistics',
+    'HR55AM6059': 'Ranjeet Singh Logistics',
+    'HR55AM8703': 'Ranjeet Singh Logistics',
+    'HR55AN5406': 'Ranjeet Singh Logistics',
+    'HR55AM0907': 'Ranjeet Singh Logistics',
 }
 
 # Page config
@@ -569,7 +573,7 @@ def show_overview_metrics(df):
         )
         # Show bifurcation below total
         st.markdown(f"""
-        <div style="font-size: 0.75rem; color: #888; margin-top: -10px; line-height: 1.4;">
+        <div style="font-size: 1.1rem; color: #888; margin-top: -10px; line-height: 1.4;">
             Own: {own_vehicles} | Swaraj: {swaraj_vehicles} | Ranjeet: {ranjeet_vehicles} | Others: {other_vehicles}
         </div>
         """, unsafe_allow_html=True)
@@ -633,7 +637,36 @@ def show_map(df):
             icon = 'question'
 
         # Create popup content with trip info
-        idle_info = f"<p style='margin: 3px 0;'><b>Idle Time:</b> {row['idle_time']}</p>" if pd.notna(row.get('idle_time')) else ""
+        # Show Speed for Moving, Idle Time for Idle, Stopped Time for Stopped
+        if row['status'] == 'Moving':
+            speed_or_time_label = "Speed"
+            speed_or_time_value = f"{row['speed']} km/h"
+        elif row['status'] == 'Idle':
+            speed_or_time_label = "Idle Time"
+            speed_or_time_value = row.get('idle_time', '-') if pd.notna(row.get('idle_time')) else '-'
+        elif row['status'] == 'Stopped':
+            speed_or_time_label = "Stopped Time"
+            # Calculate stopped time from Last Update Time (date_time) to current time
+            if pd.notna(row.get('date_time')):
+                try:
+                    last_update = pd.to_datetime(row['date_time'])
+                    stopped_seconds = (datetime.now() - last_update).total_seconds()
+                    stopped_hours = stopped_seconds / 3600
+                    if stopped_hours >= 24:
+                        days = int(stopped_hours // 24)
+                        hours = int(stopped_hours % 24)
+                        speed_or_time_value = f"{days}d {hours}h"
+                    else:
+                        hours = int(stopped_hours)
+                        minutes = int((stopped_seconds % 3600) / 60)
+                        speed_or_time_value = f"{hours}h {minutes}m"
+                except:
+                    speed_or_time_value = '-'
+            else:
+                speed_or_time_value = '-'
+        else:
+            speed_or_time_label = "Speed"
+            speed_or_time_value = f"{row['speed']} km/h"
 
         # Get trip info with safe defaults
         trip_status = row.get('trip_status', '-') if pd.notna(row.get('trip_status')) else '-'
@@ -653,8 +686,7 @@ def show_map(df):
             <h4 style="margin: 0; color: {color};">🚛 {row['vehicle_no']}</h4>
             <hr style="margin: 5px 0;">
             <p style="margin: 3px 0;"><b>Status:</b> <span style="color: {color};">{row['status']}</span></p>
-            <p style="margin: 3px 0;"><b>Speed:</b> {row['speed']} km/h</p>
-            {idle_info}
+            <p style="margin: 3px 0;"><b>{speed_or_time_label}:</b> {speed_or_time_value}</p>
             <p style="margin: 3px 0;"><b>Location:</b> {row['location']}</p>
             <hr style="margin: 5px 0; border-style: dashed;">
             <p style="margin: 3px 0;"><b>Trip Status:</b> {trip_status}</p>
@@ -1153,6 +1185,7 @@ def load_vehicle_load_details():
                     normalized_vehicle_no as vehicle_no,
                     trip_status,
                     route,
+                    onward_route,
                     party,
                     loading_date,
                     unloading_date,
@@ -1185,6 +1218,7 @@ def load_vehicle_load_details():
                             ELSE trip_status
                         END as trip_status,
                         route,
+                        onward_route,
                         party,
                         loading_date,
                         unloading_date,
@@ -1202,6 +1236,7 @@ def load_vehicle_load_details():
                 av.vehicle_no,
                 ltpv.trip_status,
                 ltpv.route,
+                ltpv.onward_route,
                 ltpv.party,
                 ltpv.loading_date,
                 ltpv.unloading_date,
@@ -1412,8 +1447,8 @@ def load_vehicle_load_details():
             if distance <= 0:
                 return '-'
 
-            # TT = distance / 350 km per day
-            tt_days = distance / 350
+            # TT = distance / 400 km per day
+            tt_days = distance / 400
 
             # Calculate expected arrival date (TT date from loading_date)
             loading_date = row['loading_date']
@@ -1502,7 +1537,7 @@ def show_load_details():
 
     # Prepare display dataframe with available columns
     display_cols = [
-        'vehicle_no', 'trip_status', 'current_trip_status', 'route', 'party', 'loading_date',
+        'vehicle_no', 'trip_status', 'current_trip_status', 'route', 'onward_route', 'party', 'loading_date',
         'driver', 'driver_phone_no',
         'gps_today_km', 'gps_yesterday_km', 'gps_month_km', 'days_above_350', 'km_trend', 'owner_name'
     ]
@@ -1517,6 +1552,7 @@ def show_load_details():
         'trip_status': 'Trip Status',
         'current_trip_status': 'Current Trip Status',
         'route': 'Route',
+        'onward_route': 'Onward Route',
         'party': 'Party',
         'loading_date': 'Loading Date',
         'driver': 'Driver',
@@ -1754,6 +1790,8 @@ def show_load_details():
                     html_table += f'<td class="center {status_class}">{val}</td>'
                 elif col == 'Route':
                     html_table += f'<td class="route-cell">{val}</td>'
+                elif col == 'Onward Route':
+                    html_table += f'<td class="route-cell">{val}</td>'
                 elif col == 'Party':
                     html_table += f'<td class="party-cell">{val}</td>'
                 elif col == 'Driver':
@@ -1801,7 +1839,7 @@ def show_load_details():
     - 🟢 **Early**: Vehicle is ahead of schedule (current date < expected arrival date based on Transit Time)
     - 🔴 **Delay**: Vehicle is behind schedule (current date > expected arrival date based on Transit Time)
     - ⚫ **Trip End**: Trip has been completed (unloading date has passed)
-    - Transit Time (TT) = Distance / 350 km per day
+    - Transit Time (TT) = Distance / 400 km per day
     """)
 
     # Download option
@@ -2190,11 +2228,37 @@ def show_status_summary(df):
                 """
                 driver_df = pd.read_sql_query(driver_query, connection)
 
+                # Get monthly night driving stats
+                monthly_night_query = """
+                    SELECT
+                        UPPER(CASE
+                            WHEN vehicle_no LIKE '% %' THEN
+                                SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                            ELSE vehicle_no
+                        END) as normalized_vehicle_no,
+                        COUNT(DISTINCT DATE(date_time)) as month_night_days
+                    FROM fvts_vehicles
+                    WHERE speed > 0
+                        AND ignition = 1
+                        AND date_time >= DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+                        AND (EXTRACT(HOUR FROM date_time) >= 23 OR EXTRACT(HOUR FROM date_time) < 6)
+                    GROUP BY UPPER(CASE
+                        WHEN vehicle_no LIKE '% %' THEN
+                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        ELSE vehicle_no
+                    END)
+                """
+                monthly_night_df = pd.read_sql_query(monthly_night_query, connection)
+
                 # Merge driver info
                 live_df = live_df.merge(driver_df, on='normalized_vehicle_no', how='left')
                 live_df['driver_name'] = live_df['driver_name'].fillna('-')
                 live_df['driver_code'] = live_df['driver_code'].fillna('-')
                 live_df['driver_phone_no'] = live_df['driver_phone_no'].fillna('-')
+
+                # Merge monthly night stats
+                live_df = live_df.merge(monthly_night_df, on='normalized_vehicle_no', how='left')
+                live_df['month_night_days'] = live_df['month_night_days'].fillna(0).astype(int)
 
                 # Merge owner info
                 owner_df = load_owner_mapping()
@@ -2214,9 +2278,10 @@ def show_status_summary(df):
                     .alert-table th { background-color: #d32f2f; color: white; padding: 10px; text-align: center; }
                     .alert-table td { background-color: #ffcdd2; color: #000; padding: 8px; border: 1px solid #ef9a9a; }
                     .alert-table td.center { text-align: center; }
+                    .alert-table td.month-stats { text-align: center; font-weight: bold; color: #6a1b9a; }
                 </style>
                 <table class="alert-table">
-                <tr><th>Vehicle No</th><th>Driver (Code)</th><th>Phone</th><th>Speed</th><th>Location</th><th>Owner Name</th></tr>
+                <tr><th>Vehicle No</th><th>Driver (Code)</th><th>Phone</th><th>Speed</th><th>Location</th><th>Month Night Days</th><th>Owner Name</th></tr>
                 '''
                 for _, row in live_df.iterrows():
                     driver = f"{row['driver_name']} ({row['driver_code']})" if row['driver_name'] != '-' else '-'
@@ -2226,6 +2291,7 @@ def show_status_summary(df):
                         <td class="center">{row['driver_phone_no']}</td>
                         <td class="center"><b>{row['speed']}</b> km/h</td>
                         <td>{row['location'] if row['location'] else '-'}</td>
+                        <td class="month-stats">{row['month_night_days']}</td>
                         <td>{row['owner_name']}</td>
                     </tr>'''
                 alert_html += '</table>'
@@ -2334,6 +2400,25 @@ def show_status_summary(df):
                         ELSE vehicle_no
                     END),
                     loading_date DESC NULLS LAST
+            ),
+            monthly_night_driving AS (
+                SELECT
+                    UPPER(CASE
+                        WHEN vehicle_no LIKE '% %' THEN
+                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        ELSE vehicle_no
+                    END) as normalized_vehicle_no,
+                    COUNT(DISTINCT DATE(date_time)) as month_night_days
+                FROM fvts_vehicles
+                WHERE speed > 0
+                    AND ignition = 1
+                    AND date_time >= DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+                    AND (EXTRACT(HOUR FROM date_time) >= 23 OR EXTRACT(HOUR FROM date_time) < 6)
+                GROUP BY UPPER(CASE
+                    WHEN vehicle_no LIKE '% %' THEN
+                        SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                    ELSE vehicle_no
+                END)
             )
             SELECT
                 nd.vehicle_no,
@@ -2348,11 +2433,13 @@ def show_status_summary(df):
                 ROUND(nd.max_speed::numeric, 0) as max_speed,
                 nd.data_points,
                 COALESCE(sl.start_location, '-') as start_location,
-                COALESCE(el.end_location, '-') as end_location
+                COALESCE(el.end_location, '-') as end_location,
+                COALESCE(mnd.month_night_days, 0) as month_night_days
             FROM night_driving nd
             LEFT JOIN driver_info di ON nd.normalized_vehicle_no = di.normalized_vehicle_no
             LEFT JOIN start_locations sl ON nd.vehicle_no = sl.vehicle_no
             LEFT JOIN end_locations el ON nd.vehicle_no = el.vehicle_no
+            LEFT JOIN monthly_night_driving mnd ON nd.normalized_vehicle_no = mnd.normalized_vehicle_no
             WHERE nd.duration_hours >= 0.0333
             ORDER BY nd.night_km DESC, nd.duration_hours DESC;
         """
@@ -2402,8 +2489,8 @@ def show_status_summary(df):
         display_df['Night KM'] = display_df['night_km'].apply(lambda x: f"{x:.1f}" if pd.notna(x) and x > 0 else '0.0')
 
         # Select columns for display
-        display_df = display_df[['vehicle_no', 'Driver', 'driver_phone', 'route', 'start_location', 'end_location', 'First Seen', 'Last Seen', 'Duration', 'Night KM', 'max_speed', 'owner_name']]
-        display_df.columns = ['Vehicle No', 'Driver (Code)', 'Driver Phone', 'Route', 'Start Location', 'End Location', 'First Seen', 'Last Seen', 'Duration', 'Night KM', 'Max Speed', 'Owner Name']
+        display_df = display_df[['vehicle_no', 'Driver', 'driver_phone', 'route', 'start_location', 'end_location', 'First Seen', 'Last Seen', 'Duration', 'Night KM', 'max_speed', 'month_night_days', 'owner_name']]
+        display_df.columns = ['Vehicle No', 'Driver (Code)', 'Driver Phone', 'Route', 'Start Location', 'End Location', 'First Seen', 'Last Seen', 'Duration', 'Night KM', 'Max Speed', 'Month Night Days', 'Owner Name']
 
         # Build HTML table
         num_rows = len(display_df)
@@ -2484,6 +2571,8 @@ def show_status_summary(df):
                     html_table += f'<td class="vehicle-no">{val}</td>'
                 elif col in ['Max Speed', 'First Seen', 'Last Seen', 'Duration', 'Night KM']:
                     html_table += f'<td class="center">{val}</td>'
+                elif col == 'Month Night Days':
+                    html_table += f'<td class="center" style="font-weight: bold; color: #ab47bc;">{int(val)}</td>'
                 elif col in ['Start Location', 'End Location']:
                     html_table += f'<td class="left" style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{val}">{val}</td>'
                 else:
@@ -2598,6 +2687,25 @@ def get_overspeed_data():
                         ELSE vehicle_no
                     END),
                     loading_date DESC NULLS LAST
+            ),
+            monthly_overspeed_stats AS (
+                SELECT
+                    UPPER(CASE
+                        WHEN vehicle_no LIKE '% %' THEN
+                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        ELSE vehicle_no
+                    END) as normalized_vehicle_no,
+                    COUNT(*) as month_overspeed_count,
+                    COUNT(DISTINCT DATE(date_time)) as month_overspeed_days
+                FROM fvts_vehicles
+                WHERE speed > 60
+                    AND ignition = 1
+                    AND date_time >= DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+                GROUP BY UPPER(CASE
+                    WHEN vehicle_no LIKE '% %' THEN
+                        SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                    ELSE vehicle_no
+                END)
             )
             SELECT
                 os.vehicle_no,
@@ -2610,9 +2718,12 @@ def get_overspeed_data():
                 os.first_overspeed,
                 os.last_overspeed,
                 os.overspeed_times,
-                os.max_speed_location
+                os.max_speed_location,
+                COALESCE(mos.month_overspeed_count, 0) as month_overspeed_count,
+                COALESCE(mos.month_overspeed_days, 0) as month_overspeed_days
             FROM overspeed_summary os
             LEFT JOIN driver_info di ON os.normalized_vehicle_no = di.normalized_vehicle_no
+            LEFT JOIN monthly_overspeed_stats mos ON os.normalized_vehicle_no = mos.normalized_vehicle_no
             ORDER BY os.overspeed_times DESC, os.max_speed DESC;
         """
         overspeed_df = pd.read_sql_query(query, connection)
@@ -2646,6 +2757,25 @@ def get_overspeed_data():
                 WHERE speed > 60
                     AND ignition = 1
                     AND EXTRACT(EPOCH FROM ((NOW() AT TIME ZONE 'Asia/Kolkata') - date_time))/60 >= 1
+            ),
+            monthly_overspeed_stats AS (
+                SELECT
+                    UPPER(CASE
+                        WHEN vehicle_no LIKE '% %' THEN
+                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        ELSE vehicle_no
+                    END) as normalized_vehicle_no,
+                    COUNT(*) as month_overspeed_count,
+                    COUNT(DISTINCT DATE(date_time)) as month_overspeed_days
+                FROM fvts_vehicles
+                WHERE speed > 60
+                    AND ignition = 1
+                    AND date_time >= DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+                GROUP BY UPPER(CASE
+                    WHEN vehicle_no LIKE '% %' THEN
+                        SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                    ELSE vehicle_no
+                END)
             ),
             driver_info AS (
                 SELECT DISTINCT ON (normalized_vehicle_no)
@@ -2696,9 +2826,12 @@ def get_overspeed_data():
                 ov.date_time,
                 COALESCE(di.driver_name, '-') as driver_name,
                 COALESCE(di.driver_code, '-') as driver_code,
-                COALESCE(di.driver_phone_no, '-') as driver_phone_no
+                COALESCE(di.driver_phone_no, '-') as driver_phone_no,
+                COALESCE(mos.month_overspeed_count, 0) as month_overspeed_count,
+                COALESCE(mos.month_overspeed_days, 0) as month_overspeed_days
             FROM overspeed_vehicles ov
             LEFT JOIN driver_info di ON ov.normalized_vehicle_no = di.normalized_vehicle_no
+            LEFT JOIN monthly_overspeed_stats mos ON ov.normalized_vehicle_no = mos.normalized_vehicle_no
             ORDER BY ov.duration_mins DESC, ov.speed DESC
         """
         live_overspeed_df = pd.read_sql_query(live_query, connection)
@@ -2749,9 +2882,10 @@ def show_overspeed_alerts(df):
                 .overspeed-alert-table td.center { text-align: center; }
                 .overspeed-alert-table td.speed { text-align: center; font-weight: bold; color: #d32f2f; font-size: 15px; }
                 .overspeed-alert-table td.duration { text-align: center; font-weight: bold; color: #e65100; }
+                .overspeed-alert-table td.month-stats { text-align: center; font-weight: bold; color: #6a1b9a; }
             </style>
             <table class="overspeed-alert-table">
-            <tr><th>Vehicle No</th><th>Driver (Code)</th><th>Phone</th><th>Speed</th><th>Duration</th><th>Location</th><th>Owner Name</th></tr>
+            <tr><th>Vehicle No</th><th>Driver (Code)</th><th>Phone</th><th>Speed</th><th>Duration</th><th>Location</th><th>Month Overspeed Count</th><th>Month Overspeed Days</th><th>Owner Name</th></tr>
             '''
             for _, row in live_overspeed_df.iterrows():
                 # Format driver info
@@ -2767,6 +2901,8 @@ def show_overspeed_alerts(df):
                     h = int(dur_mins // 60)
                     m = int(dur_mins % 60)
                     duration_str = f"{h}h {m}m"
+                month_count = int(row.get('month_overspeed_count', 0) or 0)
+                month_days = int(row.get('month_overspeed_days', 0) or 0)
                 alert_html += f'''<tr>
                     <td class="center"><b>{row['vehicle_no']}</b></td>
                     <td>{driver}</td>
@@ -2774,6 +2910,8 @@ def show_overspeed_alerts(df):
                     <td class="speed">{row['speed']} km/h</td>
                     <td class="duration">{duration_str}</td>
                     <td>{row['location'] if row['location'] else '-'}</td>
+                    <td class="month-stats">{month_count}</td>
+                    <td class="month-stats">{month_days}</td>
                     <td>{row['owner_name']}</td>
                 </tr>'''
             alert_html += '</table>'
@@ -2818,8 +2956,8 @@ def show_overspeed_alerts(df):
         display_df['Last Overspeed'] = pd.to_datetime(display_df['last_overspeed']).dt.strftime('%Y-%m-%d %H:%M')
 
         # Select columns for display (removed Duration, added Overspeed Times)
-        display_df = display_df[['vehicle_no', 'Driver', 'driver_phone', 'max_speed', 'avg_speed', 'overspeed_times', 'First Overspeed', 'Last Overspeed', 'max_speed_location', 'owner_name']]
-        display_df.columns = ['Vehicle No', 'Driver (Code)', 'Phone', 'Max Speed', 'Avg Speed', 'Overspeed Count', 'First Overspeed', 'Last Overspeed', 'Location', 'Owner Name']
+        display_df = display_df[['vehicle_no', 'Driver', 'driver_phone', 'max_speed', 'avg_speed', 'overspeed_times', 'First Overspeed', 'Last Overspeed', 'max_speed_location', 'month_overspeed_count', 'month_overspeed_days', 'owner_name']]
+        display_df.columns = ['Vehicle No', 'Driver (Code)', 'Phone', 'Max Speed', 'Avg Speed', 'Overspeed Count', 'First Overspeed', 'Last Overspeed', 'Location', 'Month Overspeed Count', 'Month Overspeed Days', 'Owner Name']
 
         # Build HTML table
         num_rows = len(display_df)
@@ -2909,6 +3047,8 @@ def show_overspeed_alerts(df):
                     html_table += f'<td class="speed">{int(val)} times</td>'
                 elif col in ['First Overspeed', 'Last Overspeed']:
                     html_table += f'<td class="center">{val}</td>'
+                elif col in ['Month Overspeed Count', 'Month Overspeed Days']:
+                    html_table += f'<td class="center" style="font-weight: bold; color: #ab47bc;">{int(val)}</td>'
                 else:
                     html_table += f'<td class="left">{val}</td>'
             html_table += '</tr>'
@@ -3065,14 +3205,56 @@ def show_driver_at_home(df):
             st.info("No load details data available.")
             return
 
-        # Merge load_df with main df to get speed and location
-        # Main df has: speed, location columns
+        # Merge load_df with main df to get speed, location, and date_time
+        # Main df has: speed, location, date_time columns
         # load_df has: driver_name, driver_code, driver_phone_no
+        merge_cols = ['vehicle_no', 'speed', 'location']
+        if 'date_time' in df.columns:
+            merge_cols.append('date_time')
         merged_vehicle_df = load_df.merge(
-            df[['vehicle_no', 'speed', 'location']],
+            df[merge_cols],
             on='vehicle_no',
             how='left'
         )
+
+        # Get idle time for each vehicle (time since last movement > 5 km/h)
+        try:
+            connection = get_database_connection()
+            idle_query = """
+                WITH last_movement AS (
+                    SELECT
+                        vehicle_no,
+                        UPPER(CASE
+                            WHEN vehicle_no LIKE '% %' THEN
+                                SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                            ELSE vehicle_no
+                        END) as normalized_vehicle_no,
+                        MAX(date_time) as last_moving_time
+                    FROM fvts_vehicles
+                    WHERE speed > 5
+                        AND date_time >= NOW() - INTERVAL '7 days'
+                    GROUP BY vehicle_no, UPPER(CASE
+                        WHEN vehicle_no LIKE '% %' THEN
+                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        ELSE vehicle_no
+                    END)
+                )
+                SELECT
+                    normalized_vehicle_no,
+                    last_moving_time,
+                    EXTRACT(EPOCH FROM (NOW() AT TIME ZONE 'Asia/Kolkata' - last_moving_time))/3600 as idle_hours
+                FROM last_movement
+            """
+            idle_df = pd.read_sql_query(idle_query, connection)
+            connection.close()
+
+            # Normalize vehicle_no in merged_vehicle_df for joining
+            merged_vehicle_df['normalized_vehicle_no'] = merged_vehicle_df['vehicle_no'].apply(
+                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+            )
+            merged_vehicle_df = merged_vehicle_df.merge(idle_df, on='normalized_vehicle_no', how='left')
+        except Exception as e:
+            merged_vehicle_df['idle_hours'] = None
 
         # Filter for stationary/idle vehicles with drivers assigned
         vehicle_driver_df = merged_vehicle_df[
@@ -3132,9 +3314,10 @@ def show_driver_at_home(df):
             .home-alert-table td { background-color: #fff3e0; color: #000; padding: 8px; border: 1px solid #ffcc80; }
             .home-alert-table td.center { text-align: center; }
             .home-alert-table td.vehicle { text-align: center; font-weight: bold; color: #e65100; }
+            .home-alert-table td.idle { text-align: center; font-weight: bold; color: #d32f2f; }
         </style>
         <table class="home-alert-table">
-        <tr><th>Vehicle No</th><th>Driver Name</th><th>Driver Code</th><th>Phone</th><th>Current Location</th><th>Home Address</th><th>Party</th></tr>
+        <tr><th>Vehicle No</th><th>Driver Name</th><th>Driver Code</th><th>Phone</th><th>Current Location</th><th>Home Address</th><th>Idle Time</th><th>Party</th></tr>
         '''
 
         for row in drivers_at_home:
@@ -3154,6 +3337,23 @@ def show_driver_at_home(df):
             home_addr = re.sub(r'\s{2,}', ' ', home_addr).strip()  # Clean extra spaces
             party = row.get('party', '-') or '-'
 
+            # Format idle time (same logic as Live Vehicle Details)
+            idle_hours = row.get('idle_hours', None)
+            if idle_hours is not None and not pd.isna(idle_hours):
+                if idle_hours >= 24:
+                    # Show in days and hours if >= 24 hours
+                    days = int(idle_hours // 24)
+                    remaining_hours = int(idle_hours % 24)
+                    idle_str = f"{days}d {remaining_hours}h"
+                else:
+                    # Show in hours and minutes if < 24 hours
+                    hours = int(idle_hours)
+                    minutes = int((idle_hours % 1) * 60)
+                    idle_str = f"{hours}h {minutes}m"
+            else:
+                # No movement data in last 7 days
+                idle_str = ">7 days"
+
             alert_html += f'''<tr>
                 <td class="vehicle">{row['vehicle_no']}</td>
                 <td>{driver_name}</td>
@@ -3161,6 +3361,7 @@ def show_driver_at_home(df):
                 <td class="center">{phone}</td>
                 <td>{current_loc}</td>
                 <td>{home_addr}</td>
+                <td class="idle">{idle_str}</td>
                 <td>{party}</td>
             </tr>'''
 
@@ -3205,79 +3406,160 @@ def show_nearby_vehicles(df, search_lat, search_lon, radius):
     # Display count
     st.success(f"Found {len(nearby_df)} vehicles within {radius} km")
 
+    # Get load details data directly from Load Details tab
+    try:
+        load_df = load_vehicle_load_details()
+
+        if len(load_df) > 0:
+            # Create driver display column
+            load_df['driver_display'] = load_df.apply(
+                lambda row: f"{row['driver_name']} ({row['driver_code']})"
+                if pd.notna(row.get('driver_name')) and pd.notna(row.get('driver_code'))
+                and str(row['driver_name']) not in ['-', 'None', 'nan', '']
+                and str(row['driver_code']) not in ['-', 'None', 'nan', '']
+                else (str(row['driver_name']) if pd.notna(row.get('driver_name')) and str(row['driver_name']) not in ['-', 'None', 'nan', ''] else '-'),
+                axis=1
+            )
+
+            # Format loading date
+            load_df['loading_date_fmt'] = pd.to_datetime(load_df['loading_date'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M')
+
+            # Get owner_name if available
+            if 'owner_name' not in load_df.columns:
+                load_df['owner_name'] = '-'
+
+            # Rename columns to avoid any conflicts and use prefixed names
+            load_df_subset = load_df[['vehicle_no', 'trip_status', 'route', 'onward_route', 'party',
+                                       'loading_date_fmt', 'driver_display', 'driver_phone_no', 'owner_name']].copy()
+            load_df_subset.columns = ['vehicle_no', 'ld_trip_status', 'ld_route', 'ld_onward_route', 'ld_party',
+                                       'ld_loading_date', 'ld_driver', 'ld_driver_phone', 'ld_owner_name']
+
+            # Fill NaN values before merge
+            for col in ['ld_trip_status', 'ld_route', 'ld_onward_route', 'ld_party', 'ld_driver_phone', 'ld_driver', 'ld_loading_date', 'ld_owner_name']:
+                load_df_subset[col] = load_df_subset[col].fillna('-').astype(str)
+                load_df_subset[col] = load_df_subset[col].replace(['None', 'nan', 'NaT', ''], '-')
+
+            nearby_df = nearby_df.merge(load_df_subset, on='vehicle_no', how='left')
+
+            # Copy to standard column names for display
+            nearby_df['trip_status'] = nearby_df['ld_trip_status'].fillna('-')
+            nearby_df['route'] = nearby_df['ld_route'].fillna('-')
+            nearby_df['onward_route'] = nearby_df['ld_onward_route'].fillna('-')
+            nearby_df['party'] = nearby_df['ld_party'].fillna('-')
+            nearby_df['loading_date_fmt'] = nearby_df['ld_loading_date'].fillna('-')
+            nearby_df['driver_display'] = nearby_df['ld_driver'].fillna('-')
+            nearby_df['driver_phone_no'] = nearby_df['ld_driver_phone'].fillna('-')
+            nearby_df['owner_name'] = nearby_df['ld_owner_name'].fillna('-')
+    except Exception as e:
+        st.error(f"Error loading trip details: {str(e)}")
+
     # Prepare display dataframe
-    display_df = nearby_df[[
-        'vehicle_no', 'status', 'speed', 'distance_km', 'location',
-        'ignition'
-    ]].copy()
+    base_cols = ['vehicle_no', 'status', 'speed', 'distance_km', 'location', 'ignition']
+    base_names = ['Vehicle No', 'Status', 'Speed (km/h)', 'Distance (km)', 'Location', 'Ignition']
 
-    display_df.columns = [
-        'Vehicle No', 'Status', 'Speed (km/h)', 'Distance (km)', 'Location',
-        'Ignition'
-    ]
+    # Add load detail columns if available
+    extra_cols = []
+    extra_names = []
+    if 'trip_status' in nearby_df.columns:
+        extra_cols.append('trip_status')
+        extra_names.append('Trip Status')
+    if 'route' in nearby_df.columns:
+        extra_cols.append('route')
+        extra_names.append('Route')
+    if 'onward_route' in nearby_df.columns:
+        extra_cols.append('onward_route')
+        extra_names.append('Onward Route')
+    if 'party' in nearby_df.columns:
+        extra_cols.append('party')
+        extra_names.append('Party')
+    if 'loading_date_fmt' in nearby_df.columns:
+        extra_cols.append('loading_date_fmt')
+        extra_names.append('Loading Date')
+    if 'driver_display' in nearby_df.columns:
+        extra_cols.append('driver_display')
+        extra_names.append('Driver')
+    if 'driver_phone_no' in nearby_df.columns:
+        extra_cols.append('driver_phone_no')
+        extra_names.append('Driver Phone')
 
-    # Format columns
-    display_df['Ignition'] = display_df['Ignition'].apply(lambda x: 'ON' if x == 1 else 'OFF')
-    display_df['Distance (km)'] = display_df['Distance (km)'].apply(lambda x: f"{x:.2f}")
-    display_df['Speed (km/h)'] = display_df['Speed (km/h)'].apply(lambda x: f"{x}" if pd.notna(x) else "0")
+    # Fill NaN values for display
+    nearby_df['trip_status'] = nearby_df.get('trip_status', pd.Series(['-']*len(nearby_df))).fillna('-')
+    nearby_df['route'] = nearby_df.get('route', pd.Series(['-']*len(nearby_df))).fillna('-')
+    nearby_df['onward_route'] = nearby_df.get('onward_route', pd.Series(['-']*len(nearby_df))).fillna('-')
+    nearby_df['party'] = nearby_df.get('party', pd.Series(['-']*len(nearby_df))).fillna('-')
+    nearby_df['loading_date_fmt'] = nearby_df.get('loading_date_fmt', pd.Series(['-']*len(nearby_df))).fillna('-')
+    nearby_df['driver_display'] = nearby_df.get('driver_display', pd.Series(['-']*len(nearby_df))).fillna('-')
+    nearby_df['driver_phone_no'] = nearby_df.get('driver_phone_no', pd.Series(['-']*len(nearby_df))).fillna('-')
 
-    # Apply light color table styling with black text
-    def style_row(row):
-        # Base style for all cells with black text
-        base_style = 'font-size: 13px; border: 1px solid rgba(200, 200, 200, 0.5); padding: 8px; color: #000000;'
+    # Build HTML table
+    import streamlit.components.v1 as components
+    num_rows = len(nearby_df)
+    table_height = min(500, 60 + num_rows * 40)
 
-        if row['Status'] == 'Moving':
-            # Light green background with black text
-            bg_color = 'background-color: rgba(144, 238, 144, 0.5);'
-        elif row['Status'] == 'Idle':
-            # Light orange background with black text
-            bg_color = 'background-color: rgba(255, 213, 128, 0.6);'
-        elif row['Status'] == 'Stopped':
-            # Darker red background with black text
-            bg_color = 'background-color: rgba(220, 120, 130, 0.75);'
-        else:
-            bg_color = 'background-color: transparent;'
+    html_table = f'''
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <style>
+        body {{ margin: 0; padding: 0; background-color: transparent; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }}
+        .nearby-table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
+        .nearby-table th {{ background-color: #505050; color: #FFFFFF; font-weight: bold; text-align: center; border: 1px solid #666; padding: 8px; font-size: 12px; position: sticky; top: 0; z-index: 10; }}
+        .nearby-table td {{ padding: 6px; border: 1px solid #666; color: #000; }}
+        .nearby-table td.center {{ text-align: center; }}
+        .nearby-table td.left {{ text-align: left; }}
+        .nearby-table td.vehicle {{ text-align: center; font-weight: 600; }}
+        .nearby-table tr.moving {{ background-color: rgba(144, 238, 144, 0.5); }}
+        .nearby-table tr.idle {{ background-color: rgba(255, 213, 128, 0.6); }}
+        .nearby-table tr.stopped {{ background-color: rgba(220, 120, 130, 0.75); }}
+        .table-container {{ max-height: {table_height - 20}px; overflow-y: auto; overflow-x: auto; }}
+    </style>
+    </head>
+    <body>
+    <div class="table-container">
+    <table class="nearby-table">
+    <thead><tr>
+        <th>Vehicle No</th><th>Status</th><th>Speed</th><th>Distance</th><th>Location</th><th>Ignition</th>
+        <th>Trip Status</th><th>Route</th><th>Onward Route</th><th>Party</th><th>Loading Date</th><th>Driver</th><th>Driver Phone</th><th>Owner Name</th>
+    </tr></thead><tbody>
+    '''
 
-        # Apply alignment based on column type
-        styles = []
-        for col in display_df.columns:
-            if col in ['Speed (km/h)', 'Distance (km)']:
-                # Center align numeric columns
-                styles.append(base_style + bg_color + 'text-align: center;')
-            elif col in ['Ignition', 'Status']:
-                # Center align status columns
-                styles.append(base_style + bg_color + 'text-align: center;')
-            elif col == 'Vehicle No':
-                # Center align vehicle number
-                styles.append(base_style + bg_color + 'text-align: center; font-weight: 600;')
-            else:
-                # Left align text columns
-                styles.append(base_style + bg_color + 'text-align: left;')
+    for _, row in nearby_df.iterrows():
+        status = row.get('status', 'Unknown')
+        row_class = 'moving' if status == 'Moving' else ('idle' if status == 'Idle' else ('stopped' if status == 'Stopped' else ''))
+        ignition = 'ON' if row.get('ignition', 0) == 1 else 'OFF'
+        distance = f"{row.get('distance_km', 0):.2f}"
+        speed = row.get('speed', 0)
+        location = row.get('location', '-') or '-'
+        trip_status = row.get('trip_status', '-') or '-'
+        route = row.get('route', '-') or '-'
+        onward_route = row.get('onward_route', '-') or '-'
+        party = row.get('party', '-') or '-'
+        loading_date = row.get('loading_date_fmt', '-') or '-'
+        driver = row.get('driver_display', '-') or '-'
+        driver_phone = row.get('driver_phone_no', '-') or '-'
 
-        return styles
+        owner_name = row.get('owner_name', '-') or '-'
 
-    # Apply styling
-    styled_df = display_df.style.apply(style_row, axis=1)
+        html_table += f'''<tr class="{row_class}">
+            <td class="vehicle">{row['vehicle_no']}</td>
+            <td class="center">{status}</td>
+            <td class="center">{speed}</td>
+            <td class="center">{distance}</td>
+            <td class="left" style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{location}">{location}</td>
+            <td class="center">{ignition}</td>
+            <td class="center">{trip_status}</td>
+            <td class="left">{route}</td>
+            <td class="left">{onward_route}</td>
+            <td class="left" style="max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{party}">{party}</td>
+            <td class="center">{loading_date}</td>
+            <td class="left">{driver}</td>
+            <td class="center">{driver_phone}</td>
+            <td class="left">{owner_name}</td>
+        </tr>'''
 
-    # Add header styling with white text on dark background
-    styled_df = styled_df.set_table_styles([
-        {'selector': 'thead th',
-         'props': [('background-color', 'rgba(80, 80, 80, 0.9)'),
-                   ('color', '#FFFFFF'),
-                   ('font-weight', 'bold'),
-                   ('text-align', 'center'),
-                   ('border', '1px solid rgba(200, 200, 200, 0.5)'),
-                   ('padding', '10px'),
-                   ('font-size', '14px')]},
-        {'selector': 'tbody tr:hover',
-         'props': [('background-color', 'rgba(33, 150, 243, 0.15)')]},
-    ])
+    html_table += '</tbody></table></div></body></html>'
 
-    st.dataframe(
-        styled_df,
-        use_container_width=True,
-        height=400
-    )
+    components.html(html_table, height=table_height, scrolling=True)
 
     return nearby_df
 
