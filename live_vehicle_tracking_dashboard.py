@@ -687,7 +687,7 @@ def show_map(df):
             <hr style="margin: 5px 0;">
             <p style="margin: 3px 0;"><b>Status:</b> <span style="color: {color};">{row['status']}</span></p>
             <p style="margin: 3px 0;"><b>{speed_or_time_label}:</b> {speed_or_time_value}</p>
-            <p style="margin: 3px 0;"><b>Location:</b> {row['location']}</p>
+            <p style="margin: 3px 0;"><b>Location:</b> {row['location'] if pd.notna(row['location']) else '-'}</p>
             <hr style="margin: 5px 0; border-style: dashed;">
             <p style="margin: 3px 0;"><b>Trip Status:</b> {trip_status}</p>
             <p style="margin: 3px 0;"><b>Route:</b> {route}</p>
@@ -743,6 +743,7 @@ def show_vehicle_list(df):
     display_df['Odometer (km)'] = display_df['Odometer (km)'].apply(lambda x: f"{float(x):,.2f}" if pd.notna(x) else "N/A")
     display_df['Idle Time'] = display_df['Idle Time'].apply(lambda x: x if pd.notna(x) else '-')
     display_df['Speed (km/h)'] = display_df['Speed (km/h)'].apply(lambda x: f"{x}" if pd.notna(x) else "0")
+    display_df['Location'] = display_df['Location'].apply(lambda x: x if pd.notna(x) and x else '-')
     if 'Mileage' in display_df.columns:
         display_df['Mileage'] = display_df['Mileage'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "-")
     if 'Current Fuel (L)' in display_df.columns:
@@ -3951,7 +3952,7 @@ def main():
                         <p style="margin: 3px 0;"><b>Distance:</b> {row['distance_km']:.2f} km</p>
                         <p style="margin: 3px 0;"><b>Status:</b> <span style="color: {color};">{row['status']}</span></p>
                         <p style="margin: 3px 0;"><b>Speed:</b> {row['speed']} km/h</p>
-                        <p style="margin: 3px 0;"><b>Location:</b> {row['location']}</p>
+                        <p style="margin: 3px 0;"><b>Location:</b> {row['location'] if pd.notna(row['location']) else '-'}</p>
                     </div>
                     """
 
