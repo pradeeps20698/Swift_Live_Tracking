@@ -3548,6 +3548,27 @@ def show_driver_at_home(df):
     except Exception as e:
         st.error(f"Error loading driver at home data: {str(e)}")
 
+def show_reports():
+    """Show reports section"""
+    st.subheader("📊 Reports")
+
+    st.info("📋 Reports section - Coming soon!")
+
+    # Placeholder for future reports
+    st.markdown("""
+    ### Available Reports (Coming Soon):
+
+    - 📈 **Daily Vehicle Summary** - Daily distance, running hours
+    - 🚛 **Trip History** - Completed trips with details
+    - ⚠️ **Overspeed Report** - Monthly overspeed incidents
+    - 🌙 **Night Driving Report** - Monthly night driving summary
+    - 🏠 **Driver Attendance** - Driver at home frequency
+    - ⛽ **Fuel Consumption** - Mileage and fuel reports
+
+    ---
+    *Select a report type and date range to generate*
+    """)
+
 def show_nearby_vehicles(df, search_lat, search_lon, radius):
     """Show vehicles near a specific location"""
 
@@ -3805,6 +3826,11 @@ def driver_at_home_fragment(df):
     show_driver_at_home(df)
 
 @st.fragment(run_every=600)  # Refresh every 10 minutes
+def reports_fragment():
+    """Reports section with 10-minute auto-refresh"""
+    show_reports()
+
+@st.fragment(run_every=600)  # Refresh every 10 minutes
 def nearby_vehicles_fragment(df, search_lat, search_lon, search_radius, search_location_name):
     """Nearby vehicles section with 10-minute auto-refresh"""
     if search_location_name:
@@ -3989,9 +4015,9 @@ def main():
 
     # Tabs
     if enable_nearby_search and search_lat and search_lon:
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["🗺️ Live Map", "📍 Nearby Vehicles", "📋 Live Vehicle Details", "🚚 Load Details", "🌙 Night Driving", "⚠️ Overspeed", "🏠 Driver at Home"])
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["🗺️ Live Map", "📍 Nearby Vehicles", "📋 Live Vehicle Details", "🚚 Load Details", "🌙 Night Driving", "⚠️ Overspeed", "🏠 Driver at Home", "📊 Reports"])
     else:
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🗺️ Live Map", "📋 Live Vehicle Details", "🚚 Load Details", "🌙 Night Driving", "⚠️ Overspeed", "🏠 Driver at Home"])
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["🗺️ Live Map", "📋 Live Vehicle Details", "🚚 Load Details", "🌙 Night Driving", "⚠️ Overspeed", "🏠 Driver at Home", "📊 Reports"])
 
     with tab1:
         map_fragment(filtered_df)
@@ -4014,6 +4040,9 @@ def main():
 
         with tab7:
             driver_at_home_fragment(filtered_df)
+
+        with tab8:
+            reports_fragment()
     else:
         with tab2:
             vehicle_list_fragment(filtered_df)
@@ -4029,6 +4058,9 @@ def main():
 
         with tab6:
             driver_at_home_fragment(filtered_df)
+
+        with tab7:
+            reports_fragment()
 
     # Footer
     st.markdown("---")
