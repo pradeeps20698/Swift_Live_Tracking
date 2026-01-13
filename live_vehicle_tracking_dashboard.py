@@ -233,7 +233,7 @@ def load_owner_mapping():
     except Exception as e:
         return pd.DataFrame(columns=['normalized_vehicle_no', 'owner_name'])
 
-@st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes, silent refresh
+@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
 def load_vehicle_data():
     """Load latest vehicle tracking data"""
     connection = None
@@ -1086,7 +1086,7 @@ def create_sparkline_svg(values, dates):
 
     return svg
 
-@st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes, silent refresh
+@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
 def load_vehicle_load_details():
     """Load ALL vehicles and map with their load details from swift_trip_log"""
     connection = None
@@ -1853,7 +1853,7 @@ def show_load_details():
         use_container_width=False
     )
 
-@st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes, silent refresh
+@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
 def load_trip_km_by_days_data():
     """Load trip data with daily GPS KM from loading date"""
     connection = None
@@ -2018,7 +2018,7 @@ def get_km_for_day(row, km_lookup, day_offset):
         return round(km_lookup[vehicle_no][target_date], 2)
     return 0
 
-@st.cache_data(ttl=60, show_spinner=False)  # Cache for 1 minute for live night data
+@st.cache_data(ttl=120, show_spinner=False)  # Cache for 2 minutes
 def get_night_driving_live_data():
     """Cached function to get live night driving data"""
     connection = None
@@ -2128,7 +2128,7 @@ def get_night_driving_live_data():
             except:
                 pass
 
-@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
+@st.cache_data(ttl=120, show_spinner=False)  # Cache for 2 minutes
 def get_night_driving_summary_data():
     """Cached function to get last night's driving summary"""
     connection = None
@@ -2793,7 +2793,7 @@ def show_status_summary(df):
             except:
                 pass
 
-@st.cache_data(ttl=120, show_spinner=False)  # Cache for 2 minutes
+@st.cache_data(ttl=60, show_spinner=False)  # Cache for 1 minute
 def get_overspeed_data():
     """Cached function to get overspeed data from database"""
     connection = None
