@@ -3732,6 +3732,42 @@ def show_nearby_vehicles(df, search_lat, search_lon, radius):
 # ============================================
 
 @st.fragment(run_every=60)  # Refresh every 60 seconds
+def top_overspeed_alert_fragment():
+    """Top overspeed alert badge with 60-second auto-refresh"""
+    _, live_overspeed_df = get_overspeed_data()
+    overspeed_count = len(live_overspeed_df)
+    if overspeed_count > 0:
+        st.markdown(f"""
+        <style>
+            .alert-badge {{
+                position: fixed;
+                top: 70px;
+                right: 20px;
+                background: linear-gradient(135deg, #ff5722, #d32f2f);
+                color: white;
+                padding: 8px 15px;
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: bold;
+                z-index: 9999;
+                box-shadow: 0 4px 15px rgba(255, 87, 34, 0.4);
+                animation: pulse-alert 2s infinite;
+                cursor: pointer;
+            }}
+            .alert-badge:hover {{
+                transform: scale(1.05);
+            }}
+            @keyframes pulse-alert {{
+                0%, 100% {{ opacity: 1; box-shadow: 0 4px 15px rgba(255, 87, 34, 0.4); }}
+                50% {{ opacity: 0.9; box-shadow: 0 4px 25px rgba(255, 87, 34, 0.7); }}
+            }}
+        </style>
+        <div class="alert-badge">
+            🚨 {overspeed_count} Overspeeding → ⚠️ Overspeed
+        </div>
+        """, unsafe_allow_html=True)
+
+@st.fragment(run_every=60)  # Refresh every 60 seconds
 def night_driving_fragment(df):
     """Night Driving section with 60-second auto-refresh"""
     show_status_summary(df)
@@ -3943,39 +3979,8 @@ def main():
             filtered_df['vehicle_no'].str.contains(vehicle_search, case=False, na=False)
         ]
 
-    # Show live alert notification on top-right (using cached overspeed data - same as Overspeed tab)
-    _, live_overspeed_df = get_overspeed_data()
-    overspeed_count = len(live_overspeed_df)
-    if overspeed_count > 0:
-        st.markdown(f"""
-        <style>
-            .alert-badge {{
-                position: fixed;
-                top: 70px;
-                right: 20px;
-                background: linear-gradient(135deg, #ff5722, #d32f2f);
-                color: white;
-                padding: 8px 15px;
-                border-radius: 8px;
-                font-size: 13px;
-                font-weight: bold;
-                z-index: 9999;
-                box-shadow: 0 4px 15px rgba(255, 87, 34, 0.4);
-                animation: pulse-alert 2s infinite;
-                cursor: pointer;
-            }}
-            .alert-badge:hover {{
-                transform: scale(1.05);
-            }}
-            @keyframes pulse-alert {{
-                0%, 100% {{ opacity: 1; box-shadow: 0 4px 15px rgba(255, 87, 34, 0.4); }}
-                50% {{ opacity: 0.9; box-shadow: 0 4px 25px rgba(255, 87, 34, 0.7); }}
-            }}
-        </style>
-        <div class="alert-badge">
-            🚨 {overspeed_count} Overspeeding → ⚠️ Overspeed
-        </div>
-        """, unsafe_allow_html=True)
+    # Show live alert notification on top-right (refreshes every 60 seconds via fragment)
+    top_overspeed_alert_fragment()
 
     # Display metrics
     show_overview_metrics(filtered_df)
