@@ -2017,6 +2017,284 @@ def get_km_for_day(row, km_lookup, day_offset):
         return round(km_lookup[vehicle_no][target_date], 2)
     return 0
 
+@st.cache_data(ttl=60, show_spinner=False)  # Cache for 1 minute for live night data
+def get_night_driving_live_data():
+    """Cached function to get live night driving data"""
+    connection = None
+    try:
+        connection = get_database_connection()
+
+        # Live night driving query
+        live_query = """
+            SELECT DISTINCT ON (normalized_vehicle_no)
+                vehicle_no,
+                speed,
+                location,
+                date_time,
+                normalized_vehicle_no
+            FROM (
+                SELECT
+                    f.vehicle_no,
+                    f.speed,
+                    f.location,
+                    f.date_time,
+                    UPPER(CASE
+                        WHEN f.vehicle_no LIKE '% %' THEN
+                            SPLIT_PART(f.vehicle_no, ' ', 2) || SPLIT_PART(f.vehicle_no, ' ', 1)
+                        ELSE f.vehicle_no
+                    END) as normalized_vehicle_no
+                FROM fvts_vehicles f
+                WHERE f.speed > 0
+                    AND f.ignition = 1
+                    AND f.date_time >= NOW() - INTERVAL '10 minutes'
+            ) sub
+            ORDER BY normalized_vehicle_no, date_time DESC
+        """
+        live_df = pd.read_sql_query(live_query, connection)
+
+        # Driver info query
+        driver_query = """
+            SELECT DISTINCT ON (normalized_vehicle_no)
+                UPPER(CASE
+                    WHEN vehicle_no LIKE '% %' THEN
+                        SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                    WHEN LENGTH(vehicle_no) >= 9
+                        AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                        AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                        CASE
+                            WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                            ELSE
+                                SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                        END
+                    ELSE vehicle_no
+                END) as normalized_vehicle_no,
+                driver_name,
+                driver_code,
+                driver_phone_no
+            FROM swift_trip_log
+            WHERE vehicle_no IS NOT NULL
+                AND driver_name IS NOT NULL
+                AND driver_name != ''
+            ORDER BY
+                UPPER(CASE
+                    WHEN vehicle_no LIKE '% %' THEN
+                        SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                    WHEN LENGTH(vehicle_no) >= 9
+                        AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                        AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                        CASE
+                            WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                            ELSE
+                                SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                        END
+                    ELSE vehicle_no
+                END),
+                loading_date DESC NULLS LAST
+        """
+        driver_df = pd.read_sql_query(driver_query, connection)
+
+        # Monthly night driving stats
+        monthly_night_query = """
+            SELECT
+                UPPER(CASE
+                    WHEN vehicle_no LIKE '% %' THEN
+                        SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                    ELSE vehicle_no
+                END) as normalized_vehicle_no,
+                COUNT(DISTINCT DATE(date_time)) as month_night_days
+            FROM fvts_vehicles
+            WHERE speed > 0
+                AND ignition = 1
+                AND date_time >= DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+                AND (EXTRACT(HOUR FROM date_time) >= 23 OR EXTRACT(HOUR FROM date_time) < 6)
+            GROUP BY UPPER(CASE
+                WHEN vehicle_no LIKE '% %' THEN
+                    SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                ELSE vehicle_no
+            END)
+        """
+        monthly_night_df = pd.read_sql_query(monthly_night_query, connection)
+
+        return live_df, driver_df, monthly_night_df
+    except Exception as e:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    finally:
+        if connection:
+            try:
+                connection.close()
+            except:
+                pass
+
+@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
+def get_night_driving_summary_data():
+    """Cached function to get last night's driving summary"""
+    connection = None
+    try:
+        connection = get_database_connection()
+
+        query = """
+            WITH night_data AS (
+                SELECT
+                    vehicle_no,
+                    UPPER(CASE
+                        WHEN vehicle_no LIKE '% %' THEN
+                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        ELSE vehicle_no
+                    END) as normalized_vehicle_no,
+                    speed,
+                    location,
+                    date_time
+                FROM fvts_vehicles
+                WHERE speed > 0
+                    AND ignition = 1
+                    AND (
+                        (date_time >= (CURRENT_DATE - INTERVAL '1 day' + INTERVAL '23 hours'))
+                        AND
+                        (date_time < (CURRENT_DATE + INTERVAL '6 hours'))
+                    )
+            ),
+            max_speed_locations AS (
+                SELECT DISTINCT ON (vehicle_no)
+                    vehicle_no,
+                    location as max_speed_location
+                FROM night_data
+                ORDER BY vehicle_no, speed DESC
+            ),
+            driver_info AS (
+                SELECT DISTINCT ON (normalized_vehicle_no)
+                    UPPER(CASE
+                        WHEN vehicle_no LIKE '% %' THEN
+                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        WHEN LENGTH(vehicle_no) >= 9
+                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                            CASE
+                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                ELSE
+                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                            END
+                        ELSE vehicle_no
+                    END) as normalized_vehicle_no,
+                    driver_name,
+                    driver_code,
+                    driver_phone_no
+                FROM swift_trip_log
+                WHERE vehicle_no IS NOT NULL
+                    AND driver_name IS NOT NULL
+                    AND driver_name != ''
+                ORDER BY
+                    UPPER(CASE
+                        WHEN vehicle_no LIKE '% %' THEN
+                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        WHEN LENGTH(vehicle_no) >= 9
+                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                            CASE
+                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                ELSE
+                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                            END
+                        ELSE vehicle_no
+                    END),
+                    loading_date DESC NULLS LAST
+            ),
+            monthly_night_stats AS (
+                SELECT
+                    UPPER(CASE
+                        WHEN vehicle_no LIKE '% %' THEN
+                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        ELSE vehicle_no
+                    END) as normalized_vehicle_no,
+                    COUNT(DISTINCT DATE(date_time)) as month_night_days
+                FROM fvts_vehicles
+                WHERE speed > 0
+                    AND ignition = 1
+                    AND date_time >= DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+                    AND (EXTRACT(HOUR FROM date_time) >= 23 OR EXTRACT(HOUR FROM date_time) < 6)
+                GROUP BY UPPER(CASE
+                    WHEN vehicle_no LIKE '% %' THEN
+                        SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                    ELSE vehicle_no
+                END)
+            )
+            SELECT
+                nd.vehicle_no,
+                nd.normalized_vehicle_no,
+                MAX(nd.speed) as max_speed,
+                ROUND(AVG(nd.speed)::numeric, 0) as avg_speed,
+                MIN(nd.date_time) as first_night_drive,
+                MAX(nd.date_time) as last_night_drive,
+                COUNT(*) as night_records,
+                msl.max_speed_location,
+                di.driver_name,
+                di.driver_code,
+                di.driver_phone_no,
+                COALESCE(mns.month_night_days, 0) as month_night_days
+            FROM night_data nd
+            LEFT JOIN max_speed_locations msl ON nd.vehicle_no = msl.vehicle_no
+            LEFT JOIN driver_info di ON nd.normalized_vehicle_no = di.normalized_vehicle_no
+            LEFT JOIN monthly_night_stats mns ON nd.normalized_vehicle_no = mns.normalized_vehicle_no
+            GROUP BY nd.vehicle_no, nd.normalized_vehicle_no, msl.max_speed_location,
+                     di.driver_name, di.driver_code, di.driver_phone_no, mns.month_night_days
+            ORDER BY max_speed DESC
+        """
+        night_df = pd.read_sql_query(query, connection)
+        return night_df
+    except Exception as e:
+        return pd.DataFrame()
+    finally:
+        if connection:
+            try:
+                connection.close()
+            except:
+                pass
+
+@st.cache_data(ttl=120, show_spinner=False)  # Cache for 2 minutes
+def get_idle_time_data():
+    """Cached function to get idle time data for all vehicles"""
+    connection = None
+    try:
+        connection = get_database_connection()
+        idle_query = """
+            WITH last_movement AS (
+                SELECT
+                    vehicle_no,
+                    UPPER(CASE
+                        WHEN vehicle_no LIKE '% %' THEN
+                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        ELSE vehicle_no
+                    END) as normalized_vehicle_no,
+                    MAX(date_time) as last_moving_time
+                FROM fvts_vehicles
+                WHERE speed > 5
+                    AND date_time >= NOW() - INTERVAL '7 days'
+                GROUP BY vehicle_no, UPPER(CASE
+                    WHEN vehicle_no LIKE '% %' THEN
+                        SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                    ELSE vehicle_no
+                END)
+            )
+            SELECT
+                normalized_vehicle_no,
+                last_moving_time,
+                EXTRACT(EPOCH FROM (NOW() AT TIME ZONE 'Asia/Kolkata' - last_moving_time))/3600 as idle_hours
+            FROM last_movement
+        """
+        idle_df = pd.read_sql_query(idle_query, connection)
+        return idle_df
+    except Exception as e:
+        return pd.DataFrame()
+    finally:
+        if connection:
+            try:
+                connection.close()
+            except:
+                pass
+
 def show_trip_km_by_days():
     """Display Trip Km By Days table"""
     st.subheader("📅 Trip Km By Days")
@@ -2148,107 +2426,16 @@ def show_status_summary(df):
     current_hour = current_time_ist.hour
     is_night_time = current_hour >= 23 or current_hour < 6
 
-    # Get night driving data from database
+    # Get night driving data from cached functions (optimized for performance)
     connection = None
     try:
-        connection = get_database_connection()
-
         # First, show LIVE ALERT for vehicles currently running at night
         if is_night_time:
-            live_query = """
-                SELECT DISTINCT ON (normalized_vehicle_no)
-                    vehicle_no,
-                    speed,
-                    location,
-                    date_time,
-                    normalized_vehicle_no
-                FROM (
-                    SELECT
-                        f.vehicle_no,
-                        f.speed,
-                        f.location,
-                        f.date_time,
-                        UPPER(CASE
-                            WHEN f.vehicle_no LIKE '% %' THEN
-                                SPLIT_PART(f.vehicle_no, ' ', 2) || SPLIT_PART(f.vehicle_no, ' ', 1)
-                            ELSE f.vehicle_no
-                        END) as normalized_vehicle_no
-                    FROM fvts_vehicles f
-                    WHERE f.speed > 0
-                        AND f.ignition = 1
-                        AND f.date_time >= NOW() - INTERVAL '10 minutes'
-                ) sub
-                ORDER BY normalized_vehicle_no, date_time DESC
-            """
-            live_df = pd.read_sql_query(live_query, connection)
+            # Use cached function instead of direct database query
+            live_df, driver_df, monthly_night_df = get_night_driving_live_data()
 
             if len(live_df) > 0:
                 st.error(f"🚨 **LIVE ALERT: {len(live_df)} vehicles currently running at night!**")
-
-                # Get driver info for live vehicles
-                driver_query = """
-                    SELECT DISTINCT ON (normalized_vehicle_no)
-                        UPPER(CASE
-                            WHEN vehicle_no LIKE '% %' THEN
-                                SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                            WHEN LENGTH(vehicle_no) >= 9
-                                AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
-                                AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
-                                CASE
-                                    WHEN POSITION('-' IN vehicle_no) > 0 THEN
-                                        SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                    ELSE
-                                        SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                END
-                            ELSE vehicle_no
-                        END) as normalized_vehicle_no,
-                        driver_name,
-                        driver_code,
-                        driver_phone_no
-                    FROM swift_trip_log
-                    WHERE vehicle_no IS NOT NULL
-                        AND driver_name IS NOT NULL
-                        AND driver_name != ''
-                    ORDER BY
-                        UPPER(CASE
-                            WHEN vehicle_no LIKE '% %' THEN
-                                SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                            WHEN LENGTH(vehicle_no) >= 9
-                                AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
-                                AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
-                                CASE
-                                    WHEN POSITION('-' IN vehicle_no) > 0 THEN
-                                        SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                    ELSE
-                                        SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                END
-                            ELSE vehicle_no
-                        END),
-                        loading_date DESC NULLS LAST
-                """
-                driver_df = pd.read_sql_query(driver_query, connection)
-
-                # Get monthly night driving stats
-                monthly_night_query = """
-                    SELECT
-                        UPPER(CASE
-                            WHEN vehicle_no LIKE '% %' THEN
-                                SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                            ELSE vehicle_no
-                        END) as normalized_vehicle_no,
-                        COUNT(DISTINCT DATE(date_time)) as month_night_days
-                    FROM fvts_vehicles
-                    WHERE speed > 0
-                        AND ignition = 1
-                        AND date_time >= DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
-                        AND (EXTRACT(HOUR FROM date_time) >= 23 OR EXTRACT(HOUR FROM date_time) < 6)
-                    GROUP BY UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        ELSE vehicle_no
-                    END)
-                """
-                monthly_night_df = pd.read_sql_query(monthly_night_query, connection)
 
                 # Merge driver info
                 live_df = live_df.merge(driver_df, on='normalized_vehicle_no', how='left')
@@ -2306,6 +2493,9 @@ def show_status_summary(df):
             st.markdown("---")
 
         st.subheader("📋 Last Night's Driving Summary (11 PM - 6 AM)")
+
+        # Get database connection for summary query
+        connection = get_database_connection()
 
         # Query to find vehicles that moved between 11 PM yesterday and 6 AM today
         # Join with swift_trip_log to get driver details
@@ -3217,43 +3407,16 @@ def show_driver_at_home(df):
             how='left'
         )
 
-        # Get idle time for each vehicle (time since last movement > 5 km/h)
-        try:
-            connection = get_database_connection()
-            idle_query = """
-                WITH last_movement AS (
-                    SELECT
-                        vehicle_no,
-                        UPPER(CASE
-                            WHEN vehicle_no LIKE '% %' THEN
-                                SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                            ELSE vehicle_no
-                        END) as normalized_vehicle_no,
-                        MAX(date_time) as last_moving_time
-                    FROM fvts_vehicles
-                    WHERE speed > 5
-                        AND date_time >= NOW() - INTERVAL '7 days'
-                    GROUP BY vehicle_no, UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        ELSE vehicle_no
-                    END)
-                )
-                SELECT
-                    normalized_vehicle_no,
-                    last_moving_time,
-                    EXTRACT(EPOCH FROM (NOW() AT TIME ZONE 'Asia/Kolkata' - last_moving_time))/3600 as idle_hours
-                FROM last_movement
-            """
-            idle_df = pd.read_sql_query(idle_query, connection)
-            connection.close()
+        # Get idle time for each vehicle using cached function (optimized for performance)
+        idle_df = get_idle_time_data()
 
-            # Normalize vehicle_no in merged_vehicle_df for joining
-            merged_vehicle_df['normalized_vehicle_no'] = merged_vehicle_df['vehicle_no'].apply(
-                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-            )
+        # Normalize vehicle_no in merged_vehicle_df for joining
+        merged_vehicle_df['normalized_vehicle_no'] = merged_vehicle_df['vehicle_no'].apply(
+            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+        )
+        if len(idle_df) > 0:
             merged_vehicle_df = merged_vehicle_df.merge(idle_df, on='normalized_vehicle_no', how='left')
-        except Exception as e:
+        else:
             merged_vehicle_df['idle_hours'] = None
 
         # Filter for stationary/idle vehicles with drivers assigned
