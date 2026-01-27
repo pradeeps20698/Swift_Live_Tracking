@@ -22,15 +22,27 @@ EXCLUDED_VEHICLES = [
 
 # Custom owner name mappings (normalized vehicle_no -> owner_name)
 CUSTOM_OWNER_MAPPING = {
-    'HR55AM1370': 'Ranjeet Singh Logistics',
-    'HR55AP1974': 'Ranjeet Singh Logistics',
-    'HR55AM9667': 'Ranjeet Singh Logistics',
-    'HR55AM2340': 'Ranjeet Singh Logistics',
-    'NL01Q8157': 'Ranjeet Singh Logistics',
-    'HR55AM6059': 'Ranjeet Singh Logistics',
-    'HR55AM8703': 'Ranjeet Singh Logistics',
-    'HR55AN5406': 'Ranjeet Singh Logistics',
-    'HR55AM0907': 'Ranjeet Singh Logistics',
+    # Ranjeet Singh Logistics
+    'HR55AQ7919': 'Ranjeet Singh Logistics',
+    'HR55AQ7627': 'Ranjeet Singh Logistics',
+    'HR55AQ3350': 'Ranjeet Singh Logistics',
+    'HR55AM1115': 'Ranjeet Singh Logistics',
+    'HR55AQ9263': 'Ranjeet Singh Logistics',
+    'HR55AM5463': 'Ranjeet Singh Logistics',
+    'HR55AN4660': 'Ranjeet Singh Logistics',
+    'HR55AN7527': 'Ranjeet Singh Logistics',
+    # R.sai Logistics India Pvt. Ltd.
+    'HR55AN5406': 'R.sai Logistics India Pvt. Ltd.',
+    'HR55AM2340': 'R.sai Logistics India Pvt. Ltd.',
+    'NL01Q8157': 'R.sai Logistics India Pvt. Ltd.',
+    'HR55AM9667': 'R.sai Logistics India Pvt. Ltd.',
+    'HR55AP1974': 'R.sai Logistics India Pvt. Ltd.',
+    'HR55AM8703': 'R.sai Logistics India Pvt. Ltd.',
+    'HR55AM0907': 'R.sai Logistics India Pvt. Ltd.',
+    'HR55AM1370': 'R.sai Logistics India Pvt. Ltd.',
+    'HR55AM6059': 'R.sai Logistics India Pvt. Ltd.',
+    'HR55AM4278': 'R.sai Logistics India Pvt. Ltd.',
+    'HR55AN5307': 'R.sai Logistics India Pvt. Ltd.',
 }
 
 # Page config
@@ -564,7 +576,8 @@ def show_overview_metrics(df):
     own_vehicles = len(df[df['owner_name'] == 'Own Vehicle']) if 'owner_name' in df.columns else 0
     swaraj_vehicles = len(df[df['owner_name'].str.contains('SWARAJ', case=False, na=False)]) if 'owner_name' in df.columns else 0
     ranjeet_vehicles = len(df[df['owner_name'] == 'Ranjeet Singh Logistics']) if 'owner_name' in df.columns else 0
-    other_vehicles = total_vehicles - own_vehicles - swaraj_vehicles - ranjeet_vehicles
+    rsai_vehicles = len(df[df['owner_name'] == 'R.sai Logistics India Pvt. Ltd.']) if 'owner_name' in df.columns else 0
+    other_vehicles = total_vehicles - own_vehicles - swaraj_vehicles - ranjeet_vehicles - rsai_vehicles
 
     with col1:
         st.metric(
@@ -574,7 +587,7 @@ def show_overview_metrics(df):
         # Show bifurcation below total
         st.markdown(f"""
         <div style="font-size: 1.1rem; color: #888; margin-top: -10px; line-height: 1.4;">
-            Own: {own_vehicles} | Swaraj: {swaraj_vehicles} | Ranjeet: {ranjeet_vehicles} | Others: {other_vehicles}
+            Own: {own_vehicles} | Swaraj: {swaraj_vehicles} | Ranjeet: {ranjeet_vehicles} | R.sai: {rsai_vehicles}
         </div>
         """, unsafe_allow_html=True)
 
@@ -1099,8 +1112,19 @@ def load_vehicle_load_details():
             WITH vehicle_today_km AS (
                 SELECT
                     UPPER(CASE
+                        -- Format: "0167 NL01AH" -> "NL01AH0167"
                         WHEN vehicle_no LIKE '% %' THEN
                             SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        -- Format: "2081NL01AJ" or "2081NL01AJ-S" (starts with 4 digits)
+                        WHEN LENGTH(vehicle_no) >= 9
+                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                            CASE
+                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                ELSE
+                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                            END
                         ELSE vehicle_no
                     END) as vehicle_no,
                     COALESCE(MAX(odometer) - MIN(odometer), 0) as today_km_traveled
@@ -1108,18 +1132,39 @@ def load_vehicle_load_details():
                 WHERE vehicle_no IS NOT NULL
                     AND DATE(date_time) = CURRENT_DATE
                     AND odometer IS NOT NULL
+                    AND odometer > 0
                 GROUP BY
                     UPPER(CASE
                         WHEN vehicle_no LIKE '% %' THEN
                             SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        WHEN LENGTH(vehicle_no) >= 9
+                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                            CASE
+                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                ELSE
+                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                            END
                         ELSE vehicle_no
                     END)
             ),
             vehicle_yesterday_km AS (
                 SELECT
                     UPPER(CASE
+                        -- Format: "0167 NL01AH" -> "NL01AH0167"
                         WHEN vehicle_no LIKE '% %' THEN
                             SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        -- Format: "2081NL01AJ" or "2081NL01AJ-S" (starts with 4 digits)
+                        WHEN LENGTH(vehicle_no) >= 9
+                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                            CASE
+                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                ELSE
+                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                            END
                         ELSE vehicle_no
                     END) as vehicle_no,
                     COALESCE(MAX(odometer) - MIN(odometer), 0) as yesterday_km_traveled
@@ -1127,18 +1172,39 @@ def load_vehicle_load_details():
                 WHERE vehicle_no IS NOT NULL
                     AND DATE(date_time) = CURRENT_DATE - INTERVAL '1 day'
                     AND odometer IS NOT NULL
+                    AND odometer > 0
                 GROUP BY
                     UPPER(CASE
                         WHEN vehicle_no LIKE '% %' THEN
                             SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        WHEN LENGTH(vehicle_no) >= 9
+                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                            CASE
+                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                ELSE
+                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                            END
                         ELSE vehicle_no
                     END)
             ),
             vehicle_month_km AS (
                 SELECT
                     UPPER(CASE
+                        -- Format: "0167 NL01AH" -> "NL01AH0167"
                         WHEN vehicle_no LIKE '% %' THEN
                             SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        -- Format: "2081NL01AJ" or "2081NL01AJ-S" (starts with 4 digits)
+                        WHEN LENGTH(vehicle_no) >= 9
+                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                            CASE
+                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                ELSE
+                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                            END
                         ELSE vehicle_no
                     END) as vehicle_no,
                     COALESCE(MAX(odometer) - MIN(odometer), 0) as month_km_traveled
@@ -1146,24 +1212,54 @@ def load_vehicle_load_details():
                 WHERE vehicle_no IS NOT NULL
                     AND DATE_TRUNC('month', date_time) = DATE_TRUNC('month', CURRENT_DATE)
                     AND odometer IS NOT NULL
+                    AND odometer > 0
                 GROUP BY
                     UPPER(CASE
                         WHEN vehicle_no LIKE '% %' THEN
                             SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        WHEN LENGTH(vehicle_no) >= 9
+                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                            CASE
+                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                ELSE
+                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                            END
                         ELSE vehicle_no
                     END)
             ),
             all_vehicles AS (
                 SELECT DISTINCT ON (
                     UPPER(CASE
+                        -- Format: "0167 NL01AH" -> "NL01AH0167"
                         WHEN vehicle_no LIKE '% %' THEN
                             SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        -- Format: "2081NL01AJ" or "2081NL01AJ-S" (starts with 4 digits)
+                        WHEN LENGTH(vehicle_no) >= 9
+                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                            CASE
+                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                ELSE
+                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                            END
                         ELSE vehicle_no
                     END)
                 )
                     UPPER(CASE
                         WHEN vehicle_no LIKE '% %' THEN
                             SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        WHEN LENGTH(vehicle_no) >= 9
+                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                            CASE
+                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                ELSE
+                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                            END
                         ELSE vehicle_no
                     END) as vehicle_no,
                     location as current_location,
@@ -1177,6 +1273,15 @@ def load_vehicle_load_details():
                     UPPER(CASE
                         WHEN vehicle_no LIKE '% %' THEN
                             SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        WHEN LENGTH(vehicle_no) >= 9
+                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                            CASE
+                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                ELSE
+                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                            END
                         ELSE vehicle_no
                     END),
                     date_time DESC
@@ -3324,16 +3429,93 @@ def get_driver_home_data():
         return pd.DataFrame()
 
 def check_driver_at_home(vehicle_location, driver_address, state=None, city=None):
-    """Check if vehicle location matches driver's home address or city"""
+    """Check if vehicle location matches driver's home address or city.
+    First validates that state or pincode matches before checking address words."""
+    import re
+
     if not vehicle_location:
         return False
 
     # Normalize strings for comparison
     vehicle_loc = str(vehicle_location).lower().strip()
     driver_addr = str(driver_address).lower().strip() if pd.notna(driver_address) else ''
+    state_str = str(state).lower().strip() if pd.notna(state) else ''
     city_str = str(city).lower().strip() if pd.notna(city) else ''
 
-    # Exclude state names and common generic location words
+    # State name mappings (various spellings to standard names)
+    state_mappings = {
+        'uttar pradesh': ['uttar pradesh', 'up', 'u.p.', 'u.p'],
+        'madhya pradesh': ['madhya pradesh', 'mp', 'm.p.', 'm.p'],
+        'rajasthan': ['rajasthan', 'raj', 'rj'],
+        'haryana': ['haryana', 'hr'],
+        'punjab': ['punjab', 'pb'],
+        'gujarat': ['gujarat', 'gj'],
+        'maharashtra': ['maharashtra', 'mh'],
+        'bihar': ['bihar', 'br'],
+        'west bengal': ['west bengal', 'wb', 'w.b.'],
+        'karnataka': ['karnataka', 'ka'],
+        'tamil nadu': ['tamil nadu', 'tn', 't.n.'],
+        'kerala': ['kerala', 'kl'],
+        'odisha': ['odisha', 'orissa', 'od'],
+        'andhra pradesh': ['andhra pradesh', 'ap', 'a.p.'],
+        'telangana': ['telangana', 'ts', 'tg'],
+        'assam': ['assam', 'as'],
+        'chhattisgarh': ['chhattisgarh', 'chattisgarh', 'cg'],
+        'jharkhand': ['jharkhand', 'jh'],
+        'uttarakhand': ['uttarakhand', 'uttrakhand', 'uk'],
+        'himachal pradesh': ['himachal pradesh', 'hp', 'h.p.'],
+        'jammu and kashmir': ['jammu and kashmir', 'jammu kashmir', 'jk', 'j&k'],
+        'goa': ['goa', 'ga'],
+        'delhi': ['delhi', 'new delhi', 'dl'],
+    }
+
+    # Extract pincode from vehicle location (6 digit number)
+    vehicle_pincode = None
+    pincode_match = re.search(r'\b(\d{6})\b', vehicle_loc)
+    if pincode_match:
+        vehicle_pincode = pincode_match.group(1)
+
+    # Extract pincode from home address
+    home_pincode = None
+    pincode_match = re.search(r'\b(\d{6})\b', driver_addr)
+    if pincode_match:
+        home_pincode = pincode_match.group(1)
+
+    # Extract state from vehicle location
+    vehicle_state = None
+    for std_state, variants in state_mappings.items():
+        for variant in variants:
+            if variant in vehicle_loc:
+                vehicle_state = std_state
+                break
+        if vehicle_state:
+            break
+
+    # Normalize home state
+    home_state = None
+    if state_str:
+        for std_state, variants in state_mappings.items():
+            if state_str in variants or std_state in state_str or state_str in std_state:
+                home_state = std_state
+                break
+        if not home_state:
+            home_state = state_str  # Use as-is if no mapping found
+
+    # CRITICAL CHECK: State or Pincode must match before proceeding
+    state_matches = False
+    pincode_matches = False
+
+    if vehicle_state and home_state:
+        state_matches = (vehicle_state == home_state)
+
+    if vehicle_pincode and home_pincode:
+        pincode_matches = (vehicle_pincode == home_pincode)
+
+    # If neither state nor pincode matches, driver is NOT at home
+    if not state_matches and not pincode_matches:
+        return False
+
+    # Exclude state names and common generic location words for word matching
     exclude_words = {
         # State names
         'uttar', 'pradesh', 'madhya', 'bihar', 'rajasthan', 'haryana', 'punjab', 'gujarat',
@@ -3353,7 +3535,7 @@ def check_driver_at_home(vehicle_location, driver_address, state=None, city=None
         'muslim', 'hindu', 'sikh', 'christian', 'temple', 'masjid', 'church', 'gurudwara'
     }
 
-    # First: Check if any word from driver address matches current location
+    # Now check if any word from driver address matches current location
     # Require minimum 5 characters to avoid false matches
     if driver_addr:
         addr_words = [w.strip(',-./\n').lower() for w in driver_addr.split() if len(w.strip(',-./\n')) >= 5]
@@ -3363,13 +3545,11 @@ def check_driver_at_home(vehicle_location, driver_address, state=None, city=None
         for place in addr_places:
             # Use word boundary matching to avoid partial matches
             # Check if place appears as a complete word in location
-            import re
             if re.search(r'\b' + re.escape(place) + r'\b', vehicle_loc):
                 return True
 
-    # Second: Check if city name matches (must be at least 4 chars and exact word match)
+    # Check if city name matches (must be at least 4 chars and exact word match)
     if city_str and len(city_str) >= 4 and city_str not in exclude_words:
-        import re
         if re.search(r'\b' + re.escape(city_str) + r'\b', vehicle_loc):
             return True
 
@@ -3481,7 +3661,7 @@ def show_driver_at_home(df):
             .home-alert-table td.idle { text-align: center; font-weight: bold; color: #d32f2f; }
         </style>
         <table class="home-alert-table">
-        <tr><th>Vehicle No</th><th>Driver Name</th><th>Driver Code</th><th>Phone</th><th>Current Location</th><th>Home Address</th><th>Idle Time</th><th>Party</th></tr>
+        <tr><th>Vehicle No</th><th>Driver Name</th><th>Driver Code</th><th>Phone</th><th>Current Location</th><th>Home Address</th><th>Idle Time</th><th>Party</th><th>Owner Name</th></tr>
         '''
 
         for row in drivers_at_home:
@@ -3518,6 +3698,7 @@ def show_driver_at_home(df):
                 # No movement data in last 7 days
                 idle_str = ">7 days"
 
+            owner_name = row.get('owner_name', '-') or '-'
             alert_html += f'''<tr>
                 <td class="vehicle">{row['vehicle_no']}</td>
                 <td>{driver_name}</td>
@@ -3527,6 +3708,7 @@ def show_driver_at_home(df):
                 <td>{home_addr}</td>
                 <td class="idle">{idle_str}</td>
                 <td>{party}</td>
+                <td>{owner_name}</td>
             </tr>'''
 
         alert_html += '</table>'
@@ -3549,25 +3731,451 @@ def show_driver_at_home(df):
         st.error(f"Error loading driver at home data: {str(e)}")
 
 def show_reports():
-    """Show reports section"""
+    """Show reports section with GPS Offline and Long Halted reports"""
+    import io
     st.subheader("📊 Reports")
 
-    st.info("📋 Reports section - Coming soon!")
+    # Report selection
+    report_type = st.selectbox(
+        "Select Report",
+        ["GPS Offline Report", "Long Halted Report"],
+        key="report_type_selector"
+    )
 
-    # Placeholder for future reports
-    st.markdown("""
-    ### Available Reports (Coming Soon):
+    if report_type == "GPS Offline Report":
+        show_gps_offline_report()
+    elif report_type == "Long Halted Report":
+        show_long_halted_report()
 
-    - 📈 **Daily Vehicle Summary** - Daily distance, running hours
-    - 🚛 **Trip History** - Completed trips with details
-    - ⚠️ **Overspeed Report** - Monthly overspeed incidents
-    - 🌙 **Night Driving Report** - Monthly night driving summary
-    - 🏠 **Driver Attendance** - Driver at home frequency
-    - ⛽ **Fuel Consumption** - Mileage and fuel reports
 
-    ---
-    *Select a report type and date range to generate*
-    """)
+def show_gps_offline_report():
+    """Show GPS Offline report - vehicles with Last Update > 1 hour and trip status Early/Delay"""
+    import io
+    from datetime import datetime, timedelta
+
+    st.markdown("### 📡 GPS Offline Report")
+    st.info("Showing vehicles where GPS has not updated in the last 1 hour and Current Trip Status is Early or Delay")
+
+    try:
+        # Get live vehicle data
+        live_df = load_vehicle_data()
+        if live_df is None or len(live_df) == 0:
+            st.warning("No vehicle data available")
+            return
+
+        # Get load details data
+        load_df = load_vehicle_load_details()
+        if load_df is None or len(load_df) == 0:
+            st.warning("No load details available")
+            return
+
+        # Get current time
+        ist = pytz.timezone('Asia/Kolkata')
+        current_time = datetime.now(ist)
+
+        # Filter live_df for GPS offline (last update > 1 hour ago)
+        live_df['date_time'] = pd.to_datetime(live_df['date_time'], errors='coerce')
+        live_df['date_time_ist'] = live_df['date_time'].dt.tz_localize('UTC').dt.tz_convert(ist) if live_df['date_time'].dt.tz is None else live_df['date_time'].dt.tz_convert(ist)
+
+        # Calculate hours since last update
+        live_df['hours_since_update'] = live_df['date_time_ist'].apply(
+            lambda x: (current_time - x).total_seconds() / 3600 if pd.notna(x) else None
+        )
+
+        # Filter for GPS offline (> 1 hour since last update)
+        offline_vehicles = live_df[live_df['hours_since_update'] > 1].copy()
+
+        # Show count of offline vehicles for debugging
+        st.caption(f"Found {len(offline_vehicles)} vehicles with GPS offline (> 1 hour)")
+
+        if len(offline_vehicles) == 0:
+            st.success("✅ All vehicles have updated GPS within the last 1 hour!")
+            return
+
+        # Normalize vehicle_no for matching
+        offline_vehicles['normalized_vehicle_no'] = offline_vehicles['vehicle_no'].apply(
+            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+        )
+        load_df['normalized_vehicle_no'] = load_df['vehicle_no'].apply(
+            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+        )
+
+        # Prepare load_df subset with renamed columns to avoid conflicts
+        load_subset = load_df.copy()
+
+        # Rename columns with 'ld_' prefix to avoid conflicts
+        rename_cols = {
+            'trip_status': 'ld_trip_status',
+            'current_trip_status': 'ld_current_trip_status',
+            'route': 'ld_route',
+            'onward_route': 'ld_onward_route',
+            'party': 'ld_party',
+            'loading_date': 'ld_loading_date',
+            'driver_name': 'ld_driver_name',
+            'driver_code': 'ld_driver_code',
+            'driver_phone_no': 'ld_driver_phone_no'
+        }
+
+        # Only rename columns that exist
+        rename_cols = {k: v for k, v in rename_cols.items() if k in load_subset.columns}
+        load_subset = load_subset.rename(columns=rename_cols)
+
+        # Select columns to merge
+        merge_cols = ['normalized_vehicle_no'] + list(rename_cols.values())
+        merge_cols = [c for c in merge_cols if c in load_subset.columns]
+
+        merged_df = offline_vehicles.merge(
+            load_subset[merge_cols],
+            on='normalized_vehicle_no',
+            how='inner'
+        )
+
+        # Filter for Early or Delay trip status only
+        if 'ld_current_trip_status' not in merged_df.columns:
+            st.warning("Current Trip Status column not found in data")
+            return
+
+        filtered_df = merged_df[
+            merged_df['ld_current_trip_status'].isin(['Early', 'Delay'])
+        ].copy()
+
+        if len(filtered_df) == 0:
+            st.success("✅ No GPS offline vehicles with Early/Delay trip status!")
+            return
+
+        # Map load details columns back to display names
+        filtered_df['trip_status'] = filtered_df.get('ld_trip_status', pd.Series(['-'] * len(filtered_df))).fillna('-')
+        filtered_df['current_trip_status'] = filtered_df.get('ld_current_trip_status', pd.Series(['-'] * len(filtered_df))).fillna('-')
+        filtered_df['route'] = filtered_df.get('ld_route', pd.Series(['-'] * len(filtered_df))).fillna('-')
+        filtered_df['onward_route'] = filtered_df.get('ld_onward_route', pd.Series(['-'] * len(filtered_df))).fillna('-')
+        filtered_df['party'] = filtered_df.get('ld_party', pd.Series(['-'] * len(filtered_df))).fillna('-')
+        filtered_df['loading_date'] = filtered_df.get('ld_loading_date', pd.Series(['-'] * len(filtered_df)))
+        filtered_df['driver_name'] = filtered_df.get('ld_driver_name', pd.Series(['-'] * len(filtered_df))).fillna('-')
+        filtered_df['driver_code'] = filtered_df.get('ld_driver_code', pd.Series(['-'] * len(filtered_df))).fillna('-')
+        filtered_df['driver_phone_no'] = filtered_df.get('ld_driver_phone_no', pd.Series(['-'] * len(filtered_df))).fillna('-')
+
+        # Ensure status and location columns exist from live data
+        if 'status' not in filtered_df.columns:
+            filtered_df['status'] = '-'
+        if 'location' not in filtered_df.columns:
+            filtered_df['location'] = '-'
+
+        filtered_df['driver'] = filtered_df.apply(
+            lambda row: f"{row['driver_name']} ({row['driver_code']})"
+            if pd.notna(row.get('driver_name')) and pd.notna(row.get('driver_code'))
+            and str(row['driver_name']) not in ['-', 'None', 'nan', '']
+            and str(row['driver_code']) not in ['-', 'None', 'nan', '']
+            else '-',
+            axis=1
+        )
+
+        # Format loading date
+        filtered_df['loading_date_fmt'] = pd.to_datetime(filtered_df['loading_date'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M')
+        filtered_df['loading_date_fmt'] = filtered_df['loading_date_fmt'].fillna('-')
+
+        # Format last update time
+        filtered_df['last_update_fmt'] = filtered_df['date_time_ist'].dt.strftime('%Y-%m-%d %H:%M')
+
+        # Format hours offline
+        filtered_df['offline_duration'] = filtered_df['hours_since_update'].apply(
+            lambda x: f"{int(x)}h {int((x % 1) * 60)}m" if pd.notna(x) else '-'
+        )
+
+        # Create display dataframe
+        display_df = filtered_df[[
+            'vehicle_no', 'trip_status', 'current_trip_status', 'route', 'onward_route',
+            'party', 'loading_date_fmt', 'driver', 'driver_phone_no', 'status',
+            'location', 'last_update_fmt', 'offline_duration'
+        ]].copy()
+
+        display_df.columns = [
+            'Vehicle No', 'Trip Status', 'Current Trip Status', 'Route', 'Onward Route',
+            'Party', 'Loading Date', 'Driver', 'Driver Phone', 'Status',
+            'Live Location', 'Last Update', 'Offline Duration'
+        ]
+
+        # Fill NaN values
+        display_df = display_df.fillna('-')
+
+        # Show count
+        st.warning(f"⚠️ **{len(display_df)} vehicle(s) with GPS offline (Early/Delay trips)**")
+
+        # Download buttons
+        col1, col2, col3 = st.columns([1, 1, 4])
+
+        # Excel download
+        with col1:
+            excel_buffer = io.BytesIO()
+            display_df.to_excel(excel_buffer, index=False, engine='openpyxl')
+            excel_buffer.seek(0)
+            st.download_button(
+                label="📥 Download Excel",
+                data=excel_buffer,
+                file_name=f"gps_offline_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        # CSV download
+        with col2:
+            csv_buffer = io.StringIO()
+            display_df.to_csv(csv_buffer, index=False)
+            st.download_button(
+                label="📥 Download CSV",
+                data=csv_buffer.getvalue(),
+                file_name=f"gps_offline_report_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv"
+            )
+
+        # Display table
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            height=min(600, 50 + len(display_df) * 35)
+        )
+
+        # Legend
+        st.markdown("---")
+        st.markdown("""
+        <div style="background-color: #1a1a2e; padding: 12px 15px; border-radius: 5px; border-left: 4px solid #f44336;">
+        <b style="color: #f44336;">Report Criteria:</b><br>
+        <span style="color: #ccc; font-size: 13px;">
+        • GPS Offline: Last Update Time > 1 hour from current time<br>
+        • Only showing vehicles with Current Trip Status = Early or Delay<br>
+        • Data from Load Details and Live Vehicle tracking
+        </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    except Exception as e:
+        st.error(f"Error generating GPS Offline report: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+
+
+def show_long_halted_report():
+    """Show Long Halted report - vehicles with Idle Time > 6 hours and trip status Early/Delay"""
+    import io
+    from datetime import datetime, timedelta
+
+    st.markdown("### 🛑 Long Halted Report")
+    st.info("Showing vehicles with Idle Time > 6 hours and Current Trip Status is Early or Delay")
+
+    try:
+        # Get live vehicle data
+        live_df = load_vehicle_data()
+        if live_df is None or len(live_df) == 0:
+            st.warning("No vehicle data available")
+            return
+
+        # Get load details data
+        load_df = load_vehicle_load_details()
+        if load_df is None or len(load_df) == 0:
+            st.warning("No load details available")
+            return
+
+        # Get idle time data
+        idle_df = get_idle_time_data()
+
+        # Normalize vehicle_no in live_df for joining
+        live_df['normalized_vehicle_no'] = live_df['vehicle_no'].apply(
+            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+        )
+
+        # Merge idle time with live data
+        if len(idle_df) > 0:
+            live_df = live_df.merge(idle_df, on='normalized_vehicle_no', how='left')
+        else:
+            live_df['idle_hours'] = None
+
+        # Filter for idle time > 6 hours AND currently stopped (not moving)
+        # Vehicle must be stopped (speed <= 5 AND status not "Moving")
+        halted_vehicles = live_df[
+            (live_df['idle_hours'].notna()) &
+            (live_df['idle_hours'] > 6) &
+            (live_df['speed'].fillna(0) <= 5) &  # Speed check
+            (~live_df['status'].str.contains('Moving', case=False, na=False))  # Exclude Moving status
+        ].copy()
+
+        st.caption(f"Found {len(halted_vehicles)} vehicles with Idle Time > 6 hours (currently stopped)")
+
+        if len(halted_vehicles) == 0:
+            st.success("✅ No vehicles halted for more than 6 hours!")
+            return
+
+        # Normalize vehicle_no in load_df
+        load_df['normalized_vehicle_no'] = load_df['vehicle_no'].apply(
+            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+        )
+
+        # Prepare load_df subset with renamed columns to avoid conflicts
+        load_subset = load_df.copy()
+
+        # Rename columns with 'ld_' prefix to avoid conflicts
+        rename_cols = {
+            'trip_status': 'ld_trip_status',
+            'current_trip_status': 'ld_current_trip_status',
+            'route': 'ld_route',
+            'onward_route': 'ld_onward_route',
+            'party': 'ld_party',
+            'loading_date': 'ld_loading_date',
+            'driver_name': 'ld_driver_name',
+            'driver_code': 'ld_driver_code',
+            'driver_phone_no': 'ld_driver_phone_no'
+        }
+
+        # Only rename columns that exist
+        rename_cols = {k: v for k, v in rename_cols.items() if k in load_subset.columns}
+        load_subset = load_subset.rename(columns=rename_cols)
+
+        # Select columns to merge
+        merge_cols = ['normalized_vehicle_no'] + list(rename_cols.values())
+        merge_cols = [c for c in merge_cols if c in load_subset.columns]
+
+        merged_df = halted_vehicles.merge(
+            load_subset[merge_cols],
+            on='normalized_vehicle_no',
+            how='inner'
+        )
+
+        # Filter for Early or Delay trip status only
+        if 'ld_current_trip_status' not in merged_df.columns:
+            st.warning("Current Trip Status column not found in data")
+            return
+
+        filtered_df = merged_df[
+            merged_df['ld_current_trip_status'].isin(['Early', 'Delay'])
+        ].copy()
+
+        if len(filtered_df) == 0:
+            st.success("✅ No long halted vehicles with Early/Delay trip status!")
+            return
+
+        # Map load details columns back to display names
+        filtered_df['trip_status'] = filtered_df.get('ld_trip_status', pd.Series(['-'] * len(filtered_df))).fillna('-')
+        filtered_df['current_trip_status'] = filtered_df.get('ld_current_trip_status', pd.Series(['-'] * len(filtered_df))).fillna('-')
+        filtered_df['route'] = filtered_df.get('ld_route', pd.Series(['-'] * len(filtered_df))).fillna('-')
+        filtered_df['onward_route'] = filtered_df.get('ld_onward_route', pd.Series(['-'] * len(filtered_df))).fillna('-')
+        filtered_df['party'] = filtered_df.get('ld_party', pd.Series(['-'] * len(filtered_df))).fillna('-')
+        filtered_df['loading_date'] = filtered_df.get('ld_loading_date', pd.Series(['-'] * len(filtered_df)))
+        filtered_df['driver_name'] = filtered_df.get('ld_driver_name', pd.Series(['-'] * len(filtered_df))).fillna('-')
+        filtered_df['driver_code'] = filtered_df.get('ld_driver_code', pd.Series(['-'] * len(filtered_df))).fillna('-')
+        filtered_df['driver_phone_no'] = filtered_df.get('ld_driver_phone_no', pd.Series(['-'] * len(filtered_df))).fillna('-')
+
+        # Ensure status and location columns exist from live data
+        if 'status' not in filtered_df.columns:
+            filtered_df['status'] = '-'
+        if 'location' not in filtered_df.columns:
+            filtered_df['location'] = '-'
+
+        # Format driver column
+        filtered_df['driver'] = filtered_df.apply(
+            lambda row: f"{row['driver_name']} ({row['driver_code']})"
+            if pd.notna(row.get('driver_name')) and pd.notna(row.get('driver_code'))
+            and str(row['driver_name']) not in ['-', 'None', 'nan', '']
+            and str(row['driver_code']) not in ['-', 'None', 'nan', '']
+            else '-',
+            axis=1
+        )
+
+        # Format loading date
+        filtered_df['loading_date_fmt'] = pd.to_datetime(filtered_df['loading_date'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M')
+        filtered_df['loading_date_fmt'] = filtered_df['loading_date_fmt'].fillna('-')
+
+        # Format idle time
+        filtered_df['idle_time_fmt'] = filtered_df['idle_hours'].apply(
+            lambda x: f"{int(x // 24)}d {int(x % 24)}h" if pd.notna(x) and x >= 24
+            else (f"{int(x)}h {int((x % 1) * 60)}m" if pd.notna(x) else '-')
+        )
+
+        # Calculate GPS Status (Offline if Last Update > 1 hour)
+        ist = pytz.timezone('Asia/Kolkata')
+        current_time = datetime.now(ist)
+
+        filtered_df['date_time'] = pd.to_datetime(filtered_df['date_time'], errors='coerce')
+        # Handle timezone
+        if filtered_df['date_time'].dt.tz is None:
+            filtered_df['date_time_ist'] = filtered_df['date_time'].dt.tz_localize('UTC').dt.tz_convert(ist)
+        else:
+            filtered_df['date_time_ist'] = filtered_df['date_time'].dt.tz_convert(ist)
+
+        filtered_df['hours_since_update'] = filtered_df['date_time_ist'].apply(
+            lambda x: (current_time - x).total_seconds() / 3600 if pd.notna(x) else None
+        )
+
+        filtered_df['gps_status'] = filtered_df['hours_since_update'].apply(
+            lambda x: 'Offline' if pd.notna(x) and x > 1 else 'Online'
+        )
+
+        # Create display dataframe
+        display_df = filtered_df[[
+            'vehicle_no', 'status', 'idle_time_fmt', 'location', 'gps_status',
+            'trip_status', 'current_trip_status', 'route', 'onward_route',
+            'party', 'loading_date_fmt', 'driver', 'driver_phone_no'
+        ]].copy()
+
+        display_df.columns = [
+            'Vehicle No', 'Status', 'Idle Time', 'Live Location', 'GPS Status',
+            'Trip Status', 'Current Trip Status', 'Route', 'Onward Route',
+            'Party', 'Loading Date', 'Driver', 'Driver Phone'
+        ]
+
+        # Fill NaN values
+        display_df = display_df.fillna('-')
+
+        # Show count
+        st.warning(f"⚠️ **{len(display_df)} vehicle(s) halted for more than 6 hours (Early/Delay trips)**")
+
+        # Download buttons
+        col1, col2, col3 = st.columns([1, 1, 4])
+
+        # Excel download
+        with col1:
+            excel_buffer = io.BytesIO()
+            display_df.to_excel(excel_buffer, index=False, engine='openpyxl')
+            excel_buffer.seek(0)
+            st.download_button(
+                label="📥 Download Excel",
+                data=excel_buffer,
+                file_name=f"long_halted_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        # CSV download
+        with col2:
+            csv_buffer = io.StringIO()
+            display_df.to_csv(csv_buffer, index=False)
+            st.download_button(
+                label="📥 Download CSV",
+                data=csv_buffer.getvalue(),
+                file_name=f"long_halted_report_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv"
+            )
+
+        # Display table
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            height=min(600, 50 + len(display_df) * 35)
+        )
+
+        # Legend
+        st.markdown("---")
+        st.markdown("""
+        <div style="background-color: #1a1a2e; padding: 12px 15px; border-radius: 5px; border-left: 4px solid #ff9800;">
+        <b style="color: #ff9800;">Report Criteria:</b><br>
+        <span style="color: #ccc; font-size: 13px;">
+        • Long Halted: Idle Time > 6 hours<br>
+        • Only showing vehicles with Current Trip Status = Early or Delay<br>
+        • Data from Load Details and Live Vehicle tracking
+        </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    except Exception as e:
+        st.error(f"Error generating Long Halted report: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+
 
 def show_nearby_vehicles(df, search_lat, search_lon, radius):
     """Show vehicles near a specific location"""
