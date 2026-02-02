@@ -732,12 +732,12 @@ def show_vehicle_list(df):
     # Prepare display dataframe - check if fuel_economy_kmpl exists
     if 'fuel_economy_kmpl' in df.columns:
         display_df = df[[
-            'vehicle_no', 'status', 'speed', 'fuel_economy_kmpl', 'current_fuel', 'idle_time', 'location',
+            'vehicle_no', 'status', 'speed', 'current_fuel', 'idle_time', 'location',
             'ignition', 'odometer', 'date_time', 'latitude', 'longitude'
         ]].copy()
 
         display_df.columns = [
-            'Vehicle No', 'Status', 'Speed (km/h)', 'Mileage', 'Current Fuel (L)', 'Idle Time', 'Location',
+            'Vehicle No', 'Status', 'Speed (km/h)', 'Current Fuel (L)', 'Idle Time', 'Location',
             'Ignition', 'Odometer (km)', 'Last Update Time', 'Latitude', 'Longitude'
         ]
     else:
