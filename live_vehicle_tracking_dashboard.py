@@ -56,17 +56,6 @@ st.set_page_config(
 # Custom CSS
 st.markdown("""
 <style>
-    /* COMPACT VIEW - Scale content to fit more on screen (75%) */
-    html {
-        zoom: 75% !important;
-        min-height: 133.33vh !important;
-    }
-
-    body, .stApp, [data-testid="stAppViewContainer"] {
-        min-height: 133.33vh !important;
-        background-color: #0e1117 !important;
-    }
-
     /* PREVENT SCREEN BLUR/FLASH DURING AUTO-REFRESH */
     /* Hide all loading indicators */
     .stSpinner, [data-testid="stStatusWidget"], .stProgress, div[data-testid="stSpinner"] {
