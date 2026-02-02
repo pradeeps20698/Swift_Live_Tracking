@@ -58,15 +58,15 @@ st.markdown("""
 <style>
     /* COMPACT VIEW - Scale content to fit more on screen */
     .main .block-container {
-        zoom: 0.85;
-        -moz-transform: scale(0.85);
+        zoom: 0.75;
+        -moz-transform: scale(0.75);
         -moz-transform-origin: top left;
     }
 
     /* Adjust sidebar to match */
     [data-testid="stSidebar"] > div:first-child {
-        zoom: 0.85;
-        -moz-transform: scale(0.85);
+        zoom: 0.75;
+        -moz-transform: scale(0.75);
         -moz-transform-origin: top left;
     }
 
