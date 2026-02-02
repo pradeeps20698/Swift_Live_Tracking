@@ -56,6 +56,31 @@ st.set_page_config(
 # Custom CSS
 st.markdown("""
 <style>
+    /* COMPACT VIEW - 75% zoom */
+    html {
+        zoom: 0.75 !important;
+    }
+
+    /* Fix black border - extend dark background everywhere */
+    html, body {
+        background: #0e1117 !important;
+        min-height: 100% !important;
+        height: auto !important;
+    }
+
+    .stApp {
+        background: #0e1117 !important;
+        min-height: 134vh !important;
+    }
+
+    [data-testid="stAppViewContainer"],
+    [data-testid="stHeader"],
+    [data-testid="stToolbar"],
+    .main,
+    section[data-testid="stSidebar"] {
+        background: #0e1117 !important;
+    }
+
     /* PREVENT SCREEN BLUR/FLASH DURING AUTO-REFRESH */
     /* Hide all loading indicators */
     .stSpinner, [data-testid="stStatusWidget"], .stProgress, div[data-testid="stSpinner"] {
