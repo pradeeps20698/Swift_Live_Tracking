@@ -56,18 +56,17 @@ st.set_page_config(
 # Custom CSS
 st.markdown("""
 <style>
-    /* COMPACT VIEW - Scale content to fit more on screen */
-    .main .block-container {
-        zoom: 0.75;
-        -moz-transform: scale(0.75);
-        -moz-transform-origin: top left;
+    /* COMPACT VIEW - Scale content to fit more on screen (75%) */
+    html {
+        zoom: 75% !important;
     }
 
-    /* Adjust sidebar to match */
-    [data-testid="stSidebar"] > div:first-child {
-        zoom: 0.75;
-        -moz-transform: scale(0.75);
-        -moz-transform-origin: top left;
+    @supports not (zoom: 75%) {
+        html {
+            transform: scale(0.75);
+            transform-origin: top left;
+            width: 133.33%;
+        }
     }
 
     /* PREVENT SCREEN BLUR/FLASH DURING AUTO-REFRESH */
