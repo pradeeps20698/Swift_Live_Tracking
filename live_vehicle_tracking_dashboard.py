@@ -56,28 +56,31 @@ st.set_page_config(
 # Custom CSS
 st.markdown("""
 <style>
-    /* COMPACT VIEW - 75% zoom */
+    /* COMPACT VIEW - 75% zoom with full background coverage */
     html {
         zoom: 0.75 !important;
-    }
-
-    /* Fix black border - extend dark background everywhere */
-    html, body {
         background: #0e1117 !important;
-        min-height: 100% !important;
-        height: auto !important;
     }
 
-    .stApp {
+    /* Full screen background to cover any gaps */
+    body::before {
+        content: "";
+        position: fixed;
+        top: -100%;
+        left: -100%;
+        width: 400%;
+        height: 400%;
         background: #0e1117 !important;
-        min-height: 134vh !important;
+        z-index: -99999;
     }
 
+    html, body, #root, .stApp,
     [data-testid="stAppViewContainer"],
     [data-testid="stHeader"],
     [data-testid="stToolbar"],
-    .main,
-    section[data-testid="stSidebar"] {
+    .main, .main .block-container,
+    section[data-testid="stSidebar"],
+    [data-testid="stSidebarContent"] {
         background: #0e1117 !important;
     }
 
