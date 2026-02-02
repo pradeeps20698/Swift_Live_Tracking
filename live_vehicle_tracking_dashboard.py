@@ -56,6 +56,20 @@ st.set_page_config(
 # Custom CSS
 st.markdown("""
 <style>
+    /* COMPACT VIEW - Scale content to fit more on screen */
+    .main .block-container {
+        zoom: 0.85;
+        -moz-transform: scale(0.85);
+        -moz-transform-origin: top left;
+    }
+
+    /* Adjust sidebar to match */
+    [data-testid="stSidebar"] > div:first-child {
+        zoom: 0.85;
+        -moz-transform: scale(0.85);
+        -moz-transform-origin: top left;
+    }
+
     /* PREVENT SCREEN BLUR/FLASH DURING AUTO-REFRESH */
     /* Hide all loading indicators */
     .stSpinner, [data-testid="stStatusWidget"], .stProgress, div[data-testid="stSpinner"] {
