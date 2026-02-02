@@ -59,14 +59,12 @@ st.markdown("""
     /* COMPACT VIEW - Scale content to fit more on screen (75%) */
     html {
         zoom: 75% !important;
+        min-height: 133.33vh !important;
     }
 
-    @supports not (zoom: 75%) {
-        html {
-            transform: scale(0.75);
-            transform-origin: top left;
-            width: 133.33%;
-        }
+    body, .stApp, [data-testid="stAppViewContainer"] {
+        min-height: 133.33vh !important;
+        background-color: #0e1117 !important;
     }
 
     /* PREVENT SCREEN BLUR/FLASH DURING AUTO-REFRESH */
