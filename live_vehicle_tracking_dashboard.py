@@ -214,14 +214,21 @@ def geocode_location(place_name):
         st.error(f"Geocoding error: {e}")
         return None, None, None
 
+def get_secret(key, default=None):
+    """Get secret from Streamlit secrets (Cloud) or environment variables (local)"""
+    try:
+        return st.secrets[key]
+    except (KeyError, FileNotFoundError):
+        return os.getenv(key, default)
+
 def get_database_connection():
-    """Create database connection using environment variables"""
+    """Create database connection using Streamlit secrets or environment variables"""
     return psycopg2.connect(
-        host=os.getenv("Host"),
-        user=os.getenv("UserName"),
-        password=os.getenv("Password"),
-        database=os.getenv("database_name"),
-        port=int(os.getenv("Port", 5432)),
+        host=get_secret("Host"),
+        user=get_secret("UserName"),
+        password=get_secret("Password"),
+        database=get_secret("database_name"),
+        port=int(get_secret("Port", 5432)),
         connect_timeout=10,
         keepalives=1,
         keepalives_idle=30,
