@@ -18,6 +18,7 @@ load_dotenv()
 # Vehicles to exclude from the dashboard (normalized format - uppercase, no spaces/dashes)
 EXCLUDED_VEHICLES = [
     'NL01AB2275',
+    'NL01AG8492O',
 ]
 
 # Custom owner name mappings (normalized vehicle_no -> owner_name)
