@@ -221,8 +221,26 @@ def get_secret(key, default=None):
     except (KeyError, FileNotFoundError):
         return os.getenv(key, default)
 
+def validate_secrets():
+    """Check if all required database secrets are configured"""
+    required_secrets = ["Host", "UserName", "Password", "database_name"]
+    missing = []
+    for key in required_secrets:
+        value = get_secret(key)
+        if not value:
+            missing.append(key)
+    return missing
+
 def get_database_connection():
     """Create database connection using Streamlit secrets or environment variables"""
+    # Validate secrets before attempting connection
+    missing_secrets = validate_secrets()
+    if missing_secrets:
+        raise ValueError(
+            f"Missing database configuration: {', '.join(missing_secrets)}. "
+            f"Please configure these in Streamlit Cloud Secrets or local .env file."
+        )
+
     return psycopg2.connect(
         host=get_secret("Host"),
         user=get_secret("UserName"),
