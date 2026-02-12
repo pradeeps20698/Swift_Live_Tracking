@@ -3215,6 +3215,31 @@ def show_overspeed_alerts(df):
             )
             live_overspeed_df['owner_name'] = live_overspeed_df['owner_name'].fillna('-')
 
+            # Merge load details for Trip Status, Route, Party, Loading Date
+            load_df = load_vehicle_load_details()
+            if len(load_df) > 0:
+                load_df['normalized_vehicle_no'] = load_df['vehicle_no'].apply(
+                    lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+                )
+                load_subset = load_df[['normalized_vehicle_no', 'trip_status', 'route', 'party', 'loading_date']].copy()
+                load_subset = load_subset.rename(columns={
+                    'trip_status': 'ld_trip_status',
+                    'route': 'ld_route',
+                    'party': 'ld_party',
+                    'loading_date': 'ld_loading_date'
+                })
+                live_overspeed_df = live_overspeed_df.merge(load_subset, on='normalized_vehicle_no', how='left')
+                live_overspeed_df['ld_trip_status'] = live_overspeed_df['ld_trip_status'].fillna('-')
+                live_overspeed_df['ld_route'] = live_overspeed_df['ld_route'].fillna('-')
+                live_overspeed_df['ld_party'] = live_overspeed_df['ld_party'].fillna('-')
+                live_overspeed_df['ld_loading_date_fmt'] = pd.to_datetime(live_overspeed_df['ld_loading_date'], errors='coerce').dt.strftime('%d-%b-%Y')
+                live_overspeed_df['ld_loading_date_fmt'] = live_overspeed_df['ld_loading_date_fmt'].fillna('-')
+            else:
+                live_overspeed_df['ld_trip_status'] = '-'
+                live_overspeed_df['ld_route'] = '-'
+                live_overspeed_df['ld_party'] = '-'
+                live_overspeed_df['ld_loading_date_fmt'] = '-'
+
             # Display live alert table with driver info
             alert_html = '''
             <style>
@@ -3228,7 +3253,7 @@ def show_overspeed_alerts(df):
                 .overspeed-alert-table td.month-stats { text-align: center; font-weight: bold; color: #6a1b9a; }
             </style>
             <table class="overspeed-alert-table">
-            <tr><th>Vehicle No</th><th>Driver (Code)</th><th>Phone</th><th>Speed</th><th>Duration</th><th>Location</th><th>Month Overspeed Count</th><th>Month Overspeed Days</th><th>Owner Name</th></tr>
+            <tr><th>Vehicle No</th><th>Driver (Code)</th><th>Phone</th><th>Speed</th><th>Duration</th><th>Location</th><th>Trip Status</th><th>Route</th><th>Party</th><th>Loading Date</th><th>Month Overspeed Count</th><th>Month Overspeed Days</th><th>Owner Name</th></tr>
             '''
             for _, row in live_overspeed_df.iterrows():
                 # Format driver info
@@ -3246,6 +3271,10 @@ def show_overspeed_alerts(df):
                     duration_str = f"{h}h {m}m"
                 month_count = int(row.get('month_overspeed_count', 0) or 0)
                 month_days = int(row.get('month_overspeed_days', 0) or 0)
+                trip_status = row.get('ld_trip_status', '-') or '-'
+                route = row.get('ld_route', '-') or '-'
+                party = row.get('ld_party', '-') or '-'
+                loading_date = row.get('ld_loading_date_fmt', '-') or '-'
                 alert_html += f'''<tr>
                     <td class="center"><b>{row['vehicle_no']}</b></td>
                     <td>{driver}</td>
@@ -3253,6 +3282,10 @@ def show_overspeed_alerts(df):
                     <td class="speed">{row['speed']} km/h</td>
                     <td class="duration">{duration_str}</td>
                     <td>{row['location'] if row['location'] else '-'}</td>
+                    <td class="center">{trip_status}</td>
+                    <td>{route}</td>
+                    <td>{party}</td>
+                    <td class="center">{loading_date}</td>
                     <td class="month-stats">{month_count}</td>
                     <td class="month-stats">{month_days}</td>
                     <td>{row['owner_name']}</td>
@@ -3285,6 +3318,31 @@ def show_overspeed_alerts(df):
         )
         overspeed_df['owner_name'] = overspeed_df['owner_name'].fillna('-')
 
+        # Merge load details for Trip Status, Route, Party, Loading Date
+        load_df = load_vehicle_load_details()
+        if len(load_df) > 0:
+            load_df['normalized_vehicle_no'] = load_df['vehicle_no'].apply(
+                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+            )
+            load_subset = load_df[['normalized_vehicle_no', 'trip_status', 'route', 'party', 'loading_date']].copy()
+            load_subset = load_subset.rename(columns={
+                'trip_status': 'ld_trip_status',
+                'route': 'ld_route',
+                'party': 'ld_party',
+                'loading_date': 'ld_loading_date'
+            })
+            overspeed_df = overspeed_df.merge(load_subset, on='normalized_vehicle_no', how='left')
+            overspeed_df['ld_trip_status'] = overspeed_df['ld_trip_status'].fillna('-')
+            overspeed_df['ld_route'] = overspeed_df['ld_route'].fillna('-')
+            overspeed_df['ld_party'] = overspeed_df['ld_party'].fillna('-')
+            overspeed_df['ld_loading_date_fmt'] = pd.to_datetime(overspeed_df['ld_loading_date'], errors='coerce').dt.strftime('%d-%b-%Y')
+            overspeed_df['ld_loading_date_fmt'] = overspeed_df['ld_loading_date_fmt'].fillna('-')
+        else:
+            overspeed_df['ld_trip_status'] = '-'
+            overspeed_df['ld_route'] = '-'
+            overspeed_df['ld_party'] = '-'
+            overspeed_df['ld_loading_date_fmt'] = '-'
+
         st.warning(f"⚠️ **{len(overspeed_df)} vehicles** had overspeed incidents in the last 24 hours")
 
         # Create display dataframe
@@ -3298,9 +3356,15 @@ def show_overspeed_alerts(df):
         display_df['First Overspeed'] = pd.to_datetime(display_df['first_overspeed']).dt.strftime('%Y-%m-%d %H:%M')
         display_df['Last Overspeed'] = pd.to_datetime(display_df['last_overspeed']).dt.strftime('%Y-%m-%d %H:%M')
 
+        # Add load details columns to display
+        display_df['Trip Status'] = overspeed_df['ld_trip_status']
+        display_df['Route'] = overspeed_df['ld_route']
+        display_df['Party'] = overspeed_df['ld_party']
+        display_df['Loading Date'] = overspeed_df['ld_loading_date_fmt']
+
         # Select columns for display (removed Duration, added Overspeed Times)
-        display_df = display_df[['vehicle_no', 'Driver', 'driver_phone', 'max_speed', 'avg_speed', 'overspeed_times', 'First Overspeed', 'Last Overspeed', 'max_speed_location', 'month_overspeed_count', 'month_overspeed_days', 'owner_name']]
-        display_df.columns = ['Vehicle No', 'Driver (Code)', 'Phone', 'Max Speed', 'Avg Speed', 'Overspeed Count', 'First Overspeed', 'Last Overspeed', 'Location', 'Month Overspeed Count', 'Month Overspeed Days', 'Owner Name']
+        display_df = display_df[['vehicle_no', 'Driver', 'driver_phone', 'max_speed', 'avg_speed', 'overspeed_times', 'First Overspeed', 'Last Overspeed', 'max_speed_location', 'Trip Status', 'Route', 'Party', 'Loading Date', 'month_overspeed_count', 'month_overspeed_days', 'owner_name']]
+        display_df.columns = ['Vehicle No', 'Driver (Code)', 'Phone', 'Max Speed', 'Avg Speed', 'Overspeed Count', 'First Overspeed', 'Last Overspeed', 'Location', 'Trip Status', 'Route', 'Party', 'Loading Date', 'Month Overspeed Count', 'Month Overspeed Days', 'Owner Name']
 
         # Build HTML table
         num_rows = len(display_df)
