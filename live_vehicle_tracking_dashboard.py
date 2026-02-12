@@ -3785,7 +3785,7 @@ def show_reports():
     # Report selection
     report_type = st.selectbox(
         "Select Report",
-        ["GPS Offline Report", "Long Halted Report"],
+        ["GPS Offline Report", "Long Halted Report", "Delay Report"],
         key="report_type_selector"
     )
 
@@ -3793,6 +3793,8 @@ def show_reports():
         show_gps_offline_report()
     elif report_type == "Long Halted Report":
         show_long_halted_report()
+    elif report_type == "Delay Report":
+        show_delay_report()
 
 
 def show_gps_offline_report():
@@ -4220,6 +4222,255 @@ def show_long_halted_report():
 
     except Exception as e:
         st.error(f"Error generating Long Halted report: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+
+
+def show_delay_report():
+    """Show Delay Report - vehicles with Current Trip Status = Delay"""
+    import io
+    from datetime import datetime, timedelta
+
+    st.markdown("### ⏰ Delay Report")
+    st.info("Showing vehicles where Trip Status = Loaded, Current Trip Status = Delay, and Loading Date is within last 15 days")
+
+    try:
+        # Get live vehicle data
+        live_df = load_vehicle_data()
+        if live_df is None or len(live_df) == 0:
+            st.warning("No vehicle data available")
+            return
+
+        # Get load details data
+        load_df = load_vehicle_load_details()
+        if load_df is None or len(load_df) == 0:
+            st.warning("No load details available")
+            return
+
+        # Get idle time data
+        idle_df = get_idle_time_data()
+
+        # Filter load_df for Trip Status = Loaded and Current Trip Status = Delay
+        delay_load_df = load_df[
+            (load_df['current_trip_status'] == 'Delay') &
+            (load_df['trip_status'] == 'Loaded')
+        ].copy()
+
+        if len(delay_load_df) == 0:
+            st.success("✅ No vehicles with Delay status and Trip Status = Loaded!")
+            return
+
+        # Filter for loading date within last 15 days
+        ist = pytz.timezone('Asia/Kolkata')
+        current_time = datetime.now(ist)
+        cutoff_date = current_time - timedelta(days=15)
+
+        # Convert loading_date to datetime if needed
+        delay_load_df['loading_date'] = pd.to_datetime(delay_load_df['loading_date'], errors='coerce')
+
+        # Filter for loading date >= cutoff_date (within last 15 days)
+        delay_load_df = delay_load_df[
+            delay_load_df['loading_date'].notna() &
+            (delay_load_df['loading_date'] >= cutoff_date.replace(tzinfo=None))
+        ].copy()
+
+        if len(delay_load_df) == 0:
+            st.success("✅ No vehicles matching criteria (Loaded + Delay + within last 15 days)!")
+            return
+
+        st.caption(f"Found {len(delay_load_df)} vehicles (Trip Status: Loaded, Current Trip Status: Delay, within last 15 days)")
+
+        # Normalize vehicle_no for matching
+        delay_load_df['normalized_vehicle_no'] = delay_load_df['vehicle_no'].apply(
+            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+        )
+        live_df['normalized_vehicle_no'] = live_df['vehicle_no'].apply(
+            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+        )
+
+        # Merge idle time with live data
+        if len(idle_df) > 0:
+            live_df = live_df.merge(idle_df, on='normalized_vehicle_no', how='left')
+        else:
+            live_df['idle_hours'] = None
+
+        # Prepare live_df subset with renamed columns
+        live_subset = live_df[['normalized_vehicle_no', 'location', 'idle_hours']].copy()
+        live_subset = live_subset.rename(columns={
+            'location': 'live_location',
+            'idle_hours': 'idle_hours_live'
+        })
+
+        # Merge delay load data with live data
+        merged_df = delay_load_df.merge(
+            live_subset,
+            on='normalized_vehicle_no',
+            how='left'
+        )
+
+        # Get current time in IST
+        ist = pytz.timezone('Asia/Kolkata')
+        current_time = datetime.now(ist)
+
+        # Calculate ETA (loading_date + distance/400 days)
+        def calculate_eta(row):
+            try:
+                loading_date = row.get('loading_date')
+                distance = row.get('distance', 0) or 0
+
+                if pd.isna(loading_date) or distance <= 0:
+                    return None
+
+                # Ensure loading_date is a datetime
+                if not isinstance(loading_date, datetime):
+                    loading_date = pd.to_datetime(loading_date)
+
+                # TT = distance / 400 km per day
+                tt_days = distance / 400
+                eta = loading_date + timedelta(days=tt_days)
+                return eta
+            except:
+                return None
+
+        merged_df['eta'] = merged_df.apply(calculate_eta, axis=1)
+
+        # Calculate Delay Duration (current_time - ETA)
+        def calculate_delay_duration(eta):
+            try:
+                if pd.isna(eta):
+                    return None, '-'
+
+                # Make eta timezone aware if needed
+                if eta.tzinfo is None:
+                    eta = ist.localize(eta)
+                else:
+                    eta = eta.astimezone(ist)
+
+                delay_seconds = (current_time - eta).total_seconds()
+                if delay_seconds < 0:
+                    return 0, '-'
+
+                delay_hours = delay_seconds / 3600
+                if delay_hours >= 24:
+                    days = int(delay_hours // 24)
+                    hours = int(delay_hours % 24)
+                    return delay_hours, f"{days}d {hours}h"
+                else:
+                    hours = int(delay_hours)
+                    minutes = int((delay_seconds % 3600) / 60)
+                    return delay_hours, f"{hours}h {minutes}m"
+            except:
+                return None, '-'
+
+        merged_df['delay_hours'], merged_df['delay_duration_fmt'] = zip(*merged_df['eta'].apply(calculate_delay_duration))
+
+        # Format ETA
+        merged_df['eta_fmt'] = merged_df['eta'].apply(
+            lambda x: x.strftime('%d-%b-%Y %H:%M') if pd.notna(x) else '-'
+        )
+
+        # Format loading date
+        merged_df['loading_date_fmt'] = pd.to_datetime(merged_df['loading_date'], errors='coerce').dt.strftime('%d-%b-%Y')
+        merged_df['loading_date_fmt'] = merged_df['loading_date_fmt'].fillna('-')
+
+        # Format idle time
+        merged_df['idle_time_fmt'] = merged_df['idle_hours_live'].apply(
+            lambda x: f"{int(x // 24)}d {int(x % 24)}h" if pd.notna(x) and x >= 24
+            else (f"{int(x)}h {int((x % 1) * 60)}m" if pd.notna(x) else '-')
+        )
+
+        # Format GPS KM columns
+        merged_df['gps_today_km_fmt'] = merged_df['gps_today_km'].apply(
+            lambda x: f"{int(x)}" if pd.notna(x) and x > 0 else '0'
+        )
+        merged_df['gps_yesterday_km_fmt'] = merged_df['gps_yesterday_km'].apply(
+            lambda x: f"{int(x)}" if pd.notna(x) and x > 0 else '0'
+        )
+
+        # Ensure columns exist
+        if 'live_location' not in merged_df.columns:
+            merged_df['live_location'] = '-'
+        if 'route' not in merged_df.columns:
+            merged_df['route'] = '-'
+        if 'onward_route' not in merged_df.columns:
+            merged_df['onward_route'] = '-'
+
+        # Create display dataframe
+        display_df = merged_df[[
+            'vehicle_no', 'loading_date_fmt', 'route', 'onward_route',
+            'live_location', 'idle_time_fmt', 'gps_today_km_fmt', 'gps_yesterday_km_fmt',
+            'delay_duration_fmt', 'eta_fmt'
+        ]].copy()
+
+        display_df.columns = [
+            'Vehicle No', 'Loading Date', 'Route', 'Onward Route',
+            'Live Location', 'Idle Time', 'GPS Today KM', 'GPS Yesterday KM',
+            'Delay Duration', 'ETA'
+        ]
+
+        # Fill NaN values
+        display_df = display_df.fillna('-')
+
+        # Sort by delay duration (descending)
+        if 'delay_hours' in merged_df.columns:
+            display_df['_sort'] = merged_df['delay_hours'].fillna(0)
+            display_df = display_df.sort_values('_sort', ascending=False)
+            display_df = display_df.drop('_sort', axis=1)
+
+        # Show count
+        st.warning(f"⚠️ **{len(display_df)} vehicle(s) with Delay status**")
+
+        # Download buttons
+        col1, col2, col3 = st.columns([1, 1, 4])
+
+        # Excel download
+        with col1:
+            excel_buffer = io.BytesIO()
+            display_df.to_excel(excel_buffer, index=False, engine='openpyxl')
+            excel_buffer.seek(0)
+            st.download_button(
+                label="📥 Download Excel",
+                data=excel_buffer,
+                file_name=f"delay_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        # CSV download
+        with col2:
+            csv_buffer = io.StringIO()
+            display_df.to_csv(csv_buffer, index=False)
+            st.download_button(
+                label="📥 Download CSV",
+                data=csv_buffer.getvalue(),
+                file_name=f"delay_report_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv"
+            )
+
+        # Display table
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            height=min(600, 50 + len(display_df) * 35)
+        )
+
+        # Legend
+        st.markdown("---")
+        st.markdown("""
+        <div style="background-color: #1a1a2e; padding: 12px 15px; border-radius: 5px; border-left: 4px solid #ff5722;">
+        <b style="color: #ff5722;">Report Criteria:</b><br>
+        <span style="color: #ccc; font-size: 13px;">
+        • Trip Status = Loaded<br>
+        • Current Trip Status = Delay<br>
+        • Loading Date must be within last 15 days<br>
+        • ETA = Loading Date + (Distance / 400 km per day)<br>
+        • Delay Duration = Current Time - ETA<br>
+        • Data from Load Details and Live Vehicle tracking
+        </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    except Exception as e:
+        st.error(f"Error generating Delay report: {str(e)}")
         import traceback
         st.code(traceback.format_exc())
 
