@@ -656,8 +656,29 @@ def show_map(df):
     m = folium.Map(
         location=[center_lat, center_lon],
         zoom_start=6,
-        tiles='OpenStreetMap'
+        tiles=None,
+        max_zoom=21
     )
+
+    # Add OpenStreetMap layer (default)
+    folium.TileLayer(
+        tiles='OpenStreetMap',
+        name='Street Map',
+        show=True,
+        max_zoom=21
+    ).add_to(m)
+
+    # Add Google Hybrid satellite view (satellite + labels)
+    folium.TileLayer(
+        tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+        attr='Google',
+        name='Satellite',
+        show=False,
+        max_zoom=21
+    ).add_to(m)
+
+    # Add layer control to switch between views
+    folium.LayerControl().add_to(m)
 
     # Add markers for each vehicle
     for idx, row in df.iterrows():
@@ -4478,7 +4499,27 @@ def nearby_vehicles_fragment(df, search_lat, search_lon, search_radius, search_l
         st.markdown("---")
         st.subheader("🗺️ Nearby Vehicles Map")
 
-        m = folium.Map(location=[search_lat, search_lon], zoom_start=10)
+        m = folium.Map(location=[search_lat, search_lon], zoom_start=10, tiles=None, max_zoom=21)
+
+        # Add OpenStreetMap layer (default)
+        folium.TileLayer(
+            tiles='OpenStreetMap',
+            name='Street Map',
+            show=True,
+            max_zoom=21
+        ).add_to(m)
+
+        # Add Google Hybrid satellite view (satellite + labels)
+        folium.TileLayer(
+            tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+            attr='Google',
+            name='Satellite',
+            show=False,
+            max_zoom=21
+        ).add_to(m)
+
+        # Add layer control to switch between views
+        folium.LayerControl().add_to(m)
 
         folium.Marker(
             location=[search_lat, search_lon],
