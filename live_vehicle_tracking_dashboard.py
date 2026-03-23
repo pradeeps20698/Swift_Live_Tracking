@@ -523,6 +523,7 @@ def load_vehicle_data():
                         ) as rn
                     FROM swift_trip_log
                     WHERE vehicle_no IS NOT NULL
+                        AND is_active = true
                 )
                 SELECT normalized_vehicle_no, trip_status, route, party, loading_date, driver_name, driver_phone_no
                 FROM normalized_trips
@@ -1382,6 +1383,7 @@ def load_vehicle_load_details():
                         created_at
                     FROM swift_trip_log
                     WHERE vehicle_no IS NOT NULL
+                        AND is_active = true
                 ) normalized
                 ORDER BY normalized_vehicle_no, loading_date DESC NULLS LAST, created_at DESC
             )
@@ -2077,6 +2079,7 @@ def load_trip_km_by_days_data():
                         driver_phone_no
                     FROM swift_trip_log
                     WHERE vehicle_no IS NOT NULL
+                        AND is_active = true
                 ) normalized
                 ORDER BY normalized_vehicle_no, loading_date DESC NULLS LAST
             )
@@ -2227,6 +2230,7 @@ def get_night_driving_live_data():
                 driver_phone_no
             FROM swift_trip_log
             WHERE vehicle_no IS NOT NULL
+                AND is_active = true
                 AND driver_name IS NOT NULL
                 AND driver_name != ''
             ORDER BY
@@ -2336,6 +2340,7 @@ def get_night_driving_summary_data():
                     driver_phone_no
                 FROM swift_trip_log
                 WHERE vehicle_no IS NOT NULL
+                    AND is_active = true
                     AND driver_name IS NOT NULL
                     AND driver_name != ''
                 ORDER BY
@@ -2725,6 +2730,7 @@ def show_status_summary(df):
                     route
                 FROM swift_trip_log
                 WHERE vehicle_no IS NOT NULL
+                    AND is_active = true
                     AND driver_name IS NOT NULL
                     AND driver_name != ''
                 ORDER BY
@@ -3012,6 +3018,7 @@ def get_overspeed_data():
                     driver_phone_no
                 FROM swift_trip_log
                 WHERE vehicle_no IS NOT NULL
+                    AND is_active = true
                     AND driver_name IS NOT NULL
                     AND driver_name != ''
                 ORDER BY
@@ -3141,6 +3148,7 @@ def get_overspeed_data():
                     driver_phone_no
                 FROM swift_trip_log
                 WHERE vehicle_no IS NOT NULL
+                    AND is_active = true
                     AND driver_name IS NOT NULL
                     AND driver_name != ''
                 ORDER BY
