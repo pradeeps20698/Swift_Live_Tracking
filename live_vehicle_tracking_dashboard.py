@@ -3204,8 +3204,7 @@ def show_overspeed_alerts(df):
 
     st.subheader("🚨 Overspeed Alerts (Speed > 60 km/h)")
 
-    # Clear cache and get fresh overspeed data to sync with top badge
-    get_overspeed_data.clear()
+    # Get overspeed data - uses 60-second cache for performance
     overspeed_df, live_overspeed_df = get_overspeed_data()
 
     # Store count in session_state for top badge to use
@@ -4934,8 +4933,8 @@ def main():
         return
 
     # Initialize overspeed count in session_state on first load (for top badge sync)
+    # Uses cached data for fast loading - cache expires every 60 seconds
     if 'live_overspeed_count' not in st.session_state:
-        get_overspeed_data.clear()
         _, live_overspeed_df = get_overspeed_data()
         st.session_state.live_overspeed_count = len(live_overspeed_df)
 
