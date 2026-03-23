@@ -3204,8 +3204,12 @@ def show_overspeed_alerts(df):
 
     st.subheader("🚨 Overspeed Alerts (Speed > 60 km/h)")
 
-    # Get overspeed data from CACHED function (fast!)
+    # Clear cache and get fresh overspeed data to sync with top badge
+    get_overspeed_data.clear()
     overspeed_df, live_overspeed_df = get_overspeed_data()
+
+    # Store count in session_state for top badge to use
+    st.session_state.live_overspeed_count = len(live_overspeed_df)
 
     try:
 
@@ -4732,9 +4736,9 @@ def show_nearby_vehicles(df, search_lat, search_lon, radius):
 
 @st.fragment(run_every=60)  # Refresh every 60 seconds
 def top_overspeed_alert_fragment():
-    """Top overspeed alert badge with 60-second auto-refresh"""
-    _, live_overspeed_df = get_overspeed_data()
-    overspeed_count = len(live_overspeed_df)
+    """Top overspeed alert badge with 60-second auto-refresh - synced with Overspeed tab"""
+    # Read count from session_state (set by overspeed tab) for sync
+    overspeed_count = st.session_state.get('live_overspeed_count', 0)
     if overspeed_count > 0:
         st.markdown(f"""
         <style>
@@ -4928,6 +4932,12 @@ def main():
     if len(df) == 0:
         st.error("No vehicle data available")
         return
+
+    # Initialize overspeed count in session_state on first load (for top badge sync)
+    if 'live_overspeed_count' not in st.session_state:
+        get_overspeed_data.clear()
+        _, live_overspeed_df = get_overspeed_data()
+        st.session_state.live_overspeed_count = len(live_overspeed_df)
 
     # Sidebar filters
     st.sidebar.header("⚙️ Filters")
