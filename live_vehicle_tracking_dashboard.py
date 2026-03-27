@@ -244,11 +244,11 @@ def get_database_connection():
         password=get_secret("Password"),
         database=get_secret("database_name"),
         port=int(get_secret("Port", 5432)),
-        connect_timeout=10,
+        connect_timeout=30,
         keepalives=1,
-        keepalives_idle=30,
-        keepalives_interval=10,
-        keepalives_count=5
+        keepalives_idle=10,
+        keepalives_interval=5,
+        keepalives_count=3
     )
 
 def refresh_all_materialized_views():
