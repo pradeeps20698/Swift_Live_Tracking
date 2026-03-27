@@ -251,6 +251,24 @@ def get_database_connection():
         keepalives_count=5
     )
 
+def refresh_materialized_view():
+    """Refresh the materialized view for latest vehicle positions"""
+    connection = None
+    try:
+        connection = get_database_connection()
+        connection.autocommit = True
+        cur = connection.cursor()
+        cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_latest_vehicle_positions")
+        cur.close()
+    except Exception as e:
+        pass  # Silently fail - view refresh is not critical
+    finally:
+        if connection:
+            try:
+                connection.close()
+            except:
+                pass
+
 @st.cache_data(ttl=600, show_spinner=False)
 def load_owner_mapping():
     """Load owner name mapping from Excel file"""
@@ -274,64 +292,27 @@ def load_vehicle_data():
     try:
         connection = get_database_connection()
 
-        # Get latest location for each vehicle (unique vehicles only)
-        # Also get the last time each vehicle was moving (speed > 0) for idle time calculation
+        # Get latest location for each vehicle from materialized view (fast!)
+        # The materialized view is refreshed every 5 minutes via scheduled job
         query = """
-            WITH ranked_records AS (
-                SELECT
-                    id,
-                    vehicle_no,
-                    imei,
-                    location,
-                    date_time,
-                    temperature,
-                    ignition,
-                    latitude,
-                    longitude,
-                    speed,
-                    angle,
-                    odometer,
-                    pincode,
-                    recorded_at,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY vehicle_no
-                        ORDER BY date_time DESC, id DESC
-                    ) as rn
-                FROM fvts_vehicles
-                WHERE latitude IS NOT NULL
-                    AND longitude IS NOT NULL
-                    AND latitude != 0
-                    AND longitude != 0
-            ),
-            last_moving AS (
-                SELECT DISTINCT ON (vehicle_no)
-                    vehicle_no,
-                    date_time as last_moving_time
-                FROM fvts_vehicles
-                WHERE speed > 0
-                    AND date_time >= NOW() - INTERVAL '7 days'
-                ORDER BY vehicle_no, date_time DESC
-            )
             SELECT
-                r.id,
-                r.vehicle_no,
-                r.imei,
-                r.location,
-                r.date_time,
-                r.temperature,
-                r.ignition,
-                r.latitude,
-                r.longitude,
-                r.speed,
-                r.angle,
-                r.odometer,
-                r.pincode,
-                r.recorded_at,
-                lm.last_moving_time
-            FROM ranked_records r
-            LEFT JOIN last_moving lm ON r.vehicle_no = lm.vehicle_no
-            WHERE r.rn = 1
-            ORDER BY r.vehicle_no;
+                id,
+                vehicle_no,
+                imei,
+                location,
+                date_time,
+                temperature,
+                ignition,
+                latitude,
+                longitude,
+                speed,
+                angle,
+                odometer,
+                pincode,
+                recorded_at,
+                last_moving_time
+            FROM mv_latest_vehicle_positions
+            ORDER BY vehicle_no;
         """
 
         df = pd.read_sql_query(query, connection)
