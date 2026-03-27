@@ -287,13 +287,15 @@ def load_owner_mapping():
 
 @st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes
 def load_vehicle_data():
-    """Load latest vehicle tracking data"""
+    """Load latest vehicle tracking data from materialized view.
+    Note: The view should be refreshed periodically via database scheduler or external job.
+    To manually refresh: REFRESH MATERIALIZED VIEW CONCURRENTLY mv_latest_vehicle_positions;
+    """
     connection = None
     try:
         connection = get_database_connection()
 
         # Get latest location for each vehicle from materialized view (fast!)
-        # The materialized view is refreshed every 5 minutes via scheduled job
         query = """
             SELECT
                 id,
