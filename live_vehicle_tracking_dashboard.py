@@ -4912,21 +4912,7 @@ def main():
     """, unsafe_allow_html=True)
     st.markdown('<p style="text-align: center; font-size: 1.1rem; margin-top: -15px; margin-bottom: 0;"><strong>Real-time Vehicle Location & Status Monitoring</strong></p>', unsafe_allow_html=True)
 
-    # Removed whole page auto-refresh - using st.fragment for partial refresh instead
-    # Night Driving and Overspeed refresh every 60 seconds
-    # Other sections refresh every 10 minutes
-
-    # Initialize session state for view refresh tracking
-    if 'last_view_refresh' not in st.session_state:
-        st.session_state.last_view_refresh = None
-
-    # Auto-refresh materialized views every 10 minutes (in background)
-    now = datetime.now()
-    if st.session_state.last_view_refresh is None or (now - st.session_state.last_view_refresh).total_seconds() > 600:
-        st.session_state.last_view_refresh = now
-        refresh_all_materialized_views()  # Runs in background thread
-
-    # Load data (cached for 10 minutes - won't reload on every auto-refresh)
+    # Load data from cached materialized views (fast!)
     with st.spinner("Loading vehicle data..."):
         df = load_vehicle_data()
 
