@@ -251,23 +251,48 @@ def get_database_connection():
         keepalives_count=5
     )
 
-def refresh_materialized_view():
-    """Refresh the materialized view for latest vehicle positions"""
-    connection = None
-    try:
-        connection = get_database_connection()
-        connection.autocommit = True
-        cur = connection.cursor()
-        cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_latest_vehicle_positions")
-        cur.close()
-    except Exception as e:
-        pass  # Silently fail - view refresh is not critical
-    finally:
-        if connection:
-            try:
-                connection.close()
-            except:
-                pass
+def refresh_all_materialized_views():
+    """Refresh all materialized views in background thread"""
+    import threading
+
+    def _refresh():
+        connection = None
+        try:
+            connection = get_database_connection()
+            connection.autocommit = True
+            cur = connection.cursor()
+
+            # Refresh views with unique index (concurrent)
+            for view in ["mv_latest_vehicle_positions", "mv_last_movement"]:
+                try:
+                    cur.execute(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {view}")
+                except:
+                    pass
+
+            # Refresh views without unique index (regular)
+            for view in ["mv_overspeed_24h", "mv_overspeed_monthly", "mv_night_driving", "mv_night_driving_monthly"]:
+                try:
+                    cur.execute(f"REFRESH MATERIALIZED VIEW {view}")
+                except:
+                    pass
+
+            cur.close()
+        except:
+            pass
+        finally:
+            if connection:
+                try:
+                    connection.close()
+                except:
+                    pass
+
+    # Run in background thread so it doesn't block the page
+    thread = threading.Thread(target=_refresh, daemon=True)
+    thread.start()
+
+# Track last refresh time
+if 'last_view_refresh' not in st.session_state:
+    st.session_state.last_view_refresh = None
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_owner_mapping():
@@ -4894,6 +4919,12 @@ def main():
     # Removed whole page auto-refresh - using st.fragment for partial refresh instead
     # Night Driving and Overspeed refresh every 60 seconds
     # Other sections refresh every 10 minutes
+
+    # Auto-refresh materialized views every 10 minutes (in background)
+    now = datetime.now()
+    if st.session_state.last_view_refresh is None or (now - st.session_state.last_view_refresh).total_seconds() > 600:
+        st.session_state.last_view_refresh = now
+        refresh_all_materialized_views()  # Runs in background thread
 
     # Load data (cached for 10 minutes - won't reload on every auto-refresh)
     with st.spinner("Loading vehicle data..."):
