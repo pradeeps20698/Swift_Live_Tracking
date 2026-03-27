@@ -290,10 +290,6 @@ def refresh_all_materialized_views():
     thread = threading.Thread(target=_refresh, daemon=True)
     thread.start()
 
-# Track last refresh time
-if 'last_view_refresh' not in st.session_state:
-    st.session_state.last_view_refresh = None
-
 @st.cache_data(ttl=600, show_spinner=False)
 def load_owner_mapping():
     """Load owner name mapping from Excel file"""
@@ -4919,6 +4915,10 @@ def main():
     # Removed whole page auto-refresh - using st.fragment for partial refresh instead
     # Night Driving and Overspeed refresh every 60 seconds
     # Other sections refresh every 10 minutes
+
+    # Initialize session state for view refresh tracking
+    if 'last_view_refresh' not in st.session_state:
+        st.session_state.last_view_refresh = None
 
     # Auto-refresh materialized views every 10 minutes (in background)
     now = datetime.now()
