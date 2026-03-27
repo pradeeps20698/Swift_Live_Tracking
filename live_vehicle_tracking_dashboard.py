@@ -571,9 +571,13 @@ def load_vehicle_data():
 
         return df
 
+    except ValueError as e:
+        st.error(f"Configuration error: {str(e)}")
+        st.info("Please ensure all database secrets (Host, UserName, Password, database_name) are configured in Streamlit Cloud Secrets.")
+        return pd.DataFrame()
     except psycopg2.OperationalError as e:
         st.error(f"Database connection error: {str(e)}")
-        st.info("Please check your database connection and try refreshing the page.")
+        st.info("Please check that the database is accessible from Streamlit Cloud. You may need to whitelist Streamlit Cloud IP addresses in your database security group.")
         return pd.DataFrame()
     except psycopg2.DatabaseError as e:
         st.error(f"Database error: {str(e)}")
@@ -4926,10 +4930,11 @@ def main():
     # Other sections refresh every 10 minutes
 
     # Load data (cached for 10 minutes - won't reload on every auto-refresh)
-    df = load_vehicle_data()
+    with st.spinner("Loading vehicle data..."):
+        df = load_vehicle_data()
 
     if len(df) == 0:
-        st.error("No vehicle data available")
+        st.error("No vehicle data available. Please check database connection and Streamlit secrets configuration.")
         return
 
     # Initialize overspeed count in session_state on first load (for top badge sync)
