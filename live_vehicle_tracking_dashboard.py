@@ -2235,7 +2235,7 @@ def get_night_driving_live_data():
         """
         driver_df = pd.read_sql_query(driver_query, connection)
 
-        # Monthly night driving stats
+        # Monthly night driving stats - uses cached materialized view
         monthly_night_query = """
             SELECT
                 UPPER(CASE
@@ -2244,11 +2244,7 @@ def get_night_driving_live_data():
                     ELSE vehicle_no
                 END) as normalized_vehicle_no,
                 COUNT(DISTINCT DATE(date_time)) as month_night_days
-            FROM fvts_vehicles
-            WHERE speed > 0
-                AND ignition = 1
-                AND date_time >= DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
-                AND (EXTRACT(HOUR FROM date_time) >= 23 OR EXTRACT(HOUR FROM date_time) < 6)
+            FROM mv_night_driving_monthly
             GROUP BY UPPER(CASE
                 WHEN vehicle_no LIKE '% %' THEN
                     SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
@@ -2941,7 +2937,7 @@ def get_overspeed_data():
     try:
         connection = get_database_connection()
 
-        # Query for 24h overspeed summary
+        # Query for 24h overspeed summary - uses cached materialized view for speed
         query = """
             WITH overspeed_data AS (
                 SELECT
@@ -2954,10 +2950,7 @@ def get_overspeed_data():
                     f.speed,
                     f.location,
                     f.date_time
-                FROM fvts_vehicles f
-                WHERE f.speed > 60
-                    AND f.ignition = 1
-                    AND f.date_time >= NOW() - INTERVAL '24 hours'
+                FROM mv_overspeed_24h f
             ),
             max_speed_locations AS (
                 SELECT DISTINCT ON (vehicle_no)
@@ -3030,10 +3023,7 @@ def get_overspeed_data():
                     END) as normalized_vehicle_no,
                     COUNT(*) as month_overspeed_count,
                     COUNT(DISTINCT DATE(date_time)) as month_overspeed_days
-                FROM fvts_vehicles
-                WHERE speed > 60
-                    AND ignition = 1
-                    AND date_time >= DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+                FROM mv_overspeed_monthly
                 GROUP BY UPPER(CASE
                     WHEN vehicle_no LIKE '% %' THEN
                         SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
@@ -3100,10 +3090,7 @@ def get_overspeed_data():
                     END) as normalized_vehicle_no,
                     COUNT(*) as month_overspeed_count,
                     COUNT(DISTINCT DATE(date_time)) as month_overspeed_days
-                FROM fvts_vehicles
-                WHERE speed > 60
-                    AND ignition = 1
-                    AND date_time >= DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+                FROM mv_overspeed_monthly
                 GROUP BY UPPER(CASE
                     WHEN vehicle_no LIKE '% %' THEN
                         SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
