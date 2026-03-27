@@ -58,11 +58,7 @@ st.set_page_config(
 st.markdown("""
 <style>
     /* PREVENT SCREEN BLUR/FLASH DURING AUTO-REFRESH */
-    /* Hide all loading indicators */
-    .stSpinner, [data-testid="stStatusWidget"], .stProgress, div[data-testid="stSpinner"] {
-        display: none !important;
-        visibility: hidden !important;
-    }
+    /* Note: Spinners are now visible for better UX feedback */
 
     /* Force all content to stay visible during rerun */
     .main, .main .block-container, [data-testid="stAppViewContainer"],
