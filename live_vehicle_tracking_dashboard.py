@@ -4591,12 +4591,15 @@ def reports_fragment():
 @st.fragment(run_every=120)  # Refresh every 2 minutes
 def nearby_vehicles_fragment(df, search_lat, search_lon, search_radius, search_location_name):
     """Nearby vehicles section with 2-minute auto-refresh"""
+    # Load fresh data on each refresh
+    fresh_df = load_vehicle_data()
+
     if search_location_name:
         st.info(f"📍 Searching near: **{search_location_name}**")
     else:
         st.info(f"📍 Searching near: **({search_lat:.6f}, {search_lon:.6f})**")
 
-    nearby_df = show_nearby_vehicles(df, search_lat, search_lon, search_radius)
+    nearby_df = show_nearby_vehicles(fresh_df, search_lat, search_lon, search_radius)
 
     if len(nearby_df) > 0:
         st.markdown("---")
