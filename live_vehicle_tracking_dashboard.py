@@ -2223,7 +2223,7 @@ def get_night_driving_summary_data():
             except:
                 pass
 
-@st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes
+@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
 def get_idle_time_data():
     """Cached function to get idle time data for all vehicles"""
     connection = None
