@@ -948,12 +948,15 @@ def show_vehicle_list(df):
         }}
         .modal-content {{
             background-color: #fefefe;
-            margin: 5% auto;
+            margin: 3% auto;
             padding: 0;
             border-radius: 10px;
             width: 80%;
             max-width: 800px;
+            max-height: 85vh;
             box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            display: flex;
+            flex-direction: column;
         }}
         .modal-header {{
             padding: 15px 20px;
@@ -979,19 +982,20 @@ def show_vehicle_list(df):
         }}
         .modal-body {{
             padding: 0;
+            flex: 1;
+            overflow: hidden;
         }}
         .modal-body iframe {{
             width: 100%;
-            height: 400px;
+            height: 350px;
             border: none;
         }}
         .modal-footer {{
-            padding: 15px 20px;
+            padding: 12px 20px;
             text-align: center;
             background-color: #1a73e8;
             border-radius: 0 0 10px 10px;
-            position: relative;
-            z-index: 10;
+            flex-shrink: 0;
         }}
         .modal-footer a {{
             text-decoration: none;
