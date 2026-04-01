@@ -312,8 +312,8 @@ def load_vehicle_data():
                     UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
                     MAX(date_time) AS last_moving_time
                 FROM fvts_vehicles
-                WHERE recorded_at >= NOW() - INTERVAL '7 days'
-                  AND speed > 5
+                WHERE recorded_at >= NOW() - INTERVAL '12 days'
+                  AND speed > 0
                 GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
             )
             SELECT
@@ -410,8 +410,8 @@ def load_vehicle_data():
                     minutes = int((idle_hours % 1) * 60)
                     return f"{hours}h {minutes}m"
             else:
-                # No movement data in last 7 days, show as unknown
-                return ">7 days"
+                # No movement data in last 12 days, show as unknown
+                return ">12 days"
 
         df['idle_time'] = df.apply(calculate_idle_time, axis=1)
 
@@ -2237,7 +2237,7 @@ def get_idle_time_data():
                     MAX(date_time) as last_moving_time
                 FROM fvts_vehicles
                 WHERE recorded_at >= NOW() - INTERVAL '12 days'
-                    AND speed > 5
+                    AND speed > 0
                 GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
             )
             SELECT
