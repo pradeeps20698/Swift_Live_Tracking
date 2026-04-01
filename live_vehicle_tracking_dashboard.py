@@ -1717,7 +1717,7 @@ def show_load_details():
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             }}
             .load-details-table {{
-                width: auto;
+                width: max-content;
                 border-collapse: collapse;
                 font-size: 12px;
                 table-layout: auto;
@@ -1814,6 +1814,8 @@ def show_load_details():
                 max-height: {table_height - 20}px;
                 overflow-y: auto;
                 overflow-x: auto;
+                width: max-content;
+                min-width: 100%;
             }}
         </style>
         </head>
