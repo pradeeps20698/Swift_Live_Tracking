@@ -857,7 +857,7 @@ def show_vehicle_list(df):
 
     # Build HTML table with clickable location cells
     num_rows = len(display_df)
-    table_height = min(600, 60 + num_rows * 45)
+    table_height = 500  # Fixed height - only rows change, not container
 
     # Rename Location to Live Location
     display_df = display_df.rename(columns={'Location': 'Live Location'})
@@ -2675,7 +2675,7 @@ def show_status_summary(df):
 
         # Build HTML table
         num_rows = len(display_df)
-        table_height = min(500, 60 + num_rows * 40)
+        table_height = 400  # Fixed height - only rows change, not container
 
         html_table = f'''
         <!DOCTYPE html>
@@ -2692,6 +2692,7 @@ def show_status_summary(df):
                 width: 100%;
                 border-collapse: collapse;
                 font-size: 13px;
+                table-layout: fixed;
             }}
             .night-table th {{
                 background-color: #1a1a2e;
@@ -3152,7 +3153,7 @@ def show_overspeed_alerts(df):
 
         # Build HTML table
         num_rows = len(display_df)
-        table_height = min(500, 60 + num_rows * 40)
+        table_height = 400  # Fixed height - only rows change, not container
 
         html_table = f'''
         <!DOCTYPE html>
@@ -3169,6 +3170,7 @@ def show_overspeed_alerts(df):
                 width: 100%;
                 border-collapse: collapse;
                 font-size: 13px;
+                table-layout: fixed;
             }}
             .overspeed-table th {{
                 background-color: #ff5722;
@@ -4433,7 +4435,7 @@ def show_nearby_vehicles(df, search_lat, search_lon, radius):
     # Build HTML table
     import streamlit.components.v1 as components
     num_rows = len(nearby_df)
-    table_height = min(500, 60 + num_rows * 40)
+    table_height = 400  # Fixed height - only rows change, not container
 
     html_table = f'''
     <!DOCTYPE html>
