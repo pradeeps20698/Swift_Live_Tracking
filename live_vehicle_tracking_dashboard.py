@@ -2236,7 +2236,7 @@ def get_idle_time_data():
                     UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
                     MAX(date_time) as last_moving_time
                 FROM fvts_vehicles
-                WHERE recorded_at >= NOW() - INTERVAL '7 days'
+                WHERE recorded_at >= NOW() - INTERVAL '12 days'
                     AND speed > 5
                 GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
             )
