@@ -4481,10 +4481,8 @@ def show_nearby_vehicles(df, search_lat, search_lon, radius):
 @st.fragment(run_every=60)  # Refresh every 60 seconds
 def top_overspeed_alert_fragment():
     """Top overspeed alert badge with 60-second auto-refresh - synced with Overspeed tab"""
-    # Get live overspeed count directly from cached function for sync
-    _, live_overspeed_df = get_overspeed_data()
-    overspeed_count = len(live_overspeed_df)
-    st.session_state.live_overspeed_count = overspeed_count  # Update session state
+    # Read from session_state (set by overspeed tab) for perfect sync
+    overspeed_count = st.session_state.get('live_overspeed_count', 0)
     if overspeed_count > 0:
         st.markdown(f"""
         <style>
