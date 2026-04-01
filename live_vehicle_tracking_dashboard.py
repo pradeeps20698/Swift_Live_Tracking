@@ -4432,75 +4432,39 @@ def show_nearby_vehicles(df, search_lat, search_lon, radius):
     nearby_df['driver_display'] = nearby_df.get('driver_display', pd.Series(['-']*len(nearby_df))).fillna('-')
     nearby_df['driver_phone_no'] = nearby_df.get('driver_phone_no', pd.Series(['-']*len(nearby_df))).fillna('-')
 
-    # Build HTML table
-    import streamlit.components.v1 as components
-    num_rows = len(nearby_df)
-    table_height = 400  # Fixed height - only rows change, not container
+    # Build display dataframe
+    display_df = nearby_df.copy()
 
-    html_table = f'''
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <style>
-        body {{ margin: 0; padding: 0; background-color: transparent; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }}
-        .nearby-table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
-        .nearby-table th {{ background-color: #505050; color: #FFFFFF; font-weight: bold; text-align: center; border: 1px solid #666; padding: 8px; font-size: 12px; position: sticky; top: 0; z-index: 10; }}
-        .nearby-table td {{ padding: 6px; border: 1px solid #666; color: #FFFFFF; background-color: #262730; }}
-        .nearby-table td.center {{ text-align: center; }}
-        .nearby-table td.left {{ text-align: left; }}
-        .nearby-table td.vehicle {{ text-align: center; font-weight: 600; }}
-        .nearby-table tr.moving td {{ background-color: rgba(34, 139, 34, 0.4); }}
-        .nearby-table tr.idle td {{ background-color: rgba(255, 165, 0, 0.4); }}
-        .nearby-table tr.stopped td {{ background-color: rgba(220, 53, 69, 0.4); }}
-        .table-container {{ max-height: {table_height - 20}px; overflow-y: auto; overflow-x: auto; }}
-    </style>
-    </head>
-    <body>
-    <div class="table-container">
-    <table class="nearby-table">
-    <thead><tr>
-        <th>Vehicle No</th><th>Status</th><th>Speed</th><th>Distance</th><th>Location</th><th>Ignition</th>
-        <th>Trip Status</th><th>Route</th><th>Onward Route</th><th>Party</th><th>Loading Date</th><th>Driver</th><th>Driver Phone</th><th>Owner Name</th>
-    </tr></thead><tbody>
-    '''
+    # Format columns for display
+    display_df['Ignition'] = display_df['ignition'].apply(lambda x: 'ON' if x == 1 else 'OFF')
+    display_df['Distance (km)'] = display_df['distance_km'].apply(lambda x: f"{x:.2f}")
 
-    for _, row in nearby_df.iterrows():
-        status = row.get('status', 'Unknown')
-        row_class = 'moving' if status == 'Moving' else ('idle' if status == 'Idle' else ('stopped' if status == 'Stopped' else ''))
-        ignition = 'ON' if row.get('ignition', 0) == 1 else 'OFF'
-        distance = f"{row.get('distance_km', 0):.2f}"
-        speed = row.get('speed', 0)
-        location = row.get('location', '-') or '-'
-        trip_status = row.get('trip_status', '-') or '-'
-        route = row.get('route', '-') or '-'
-        onward_route = row.get('onward_route', '-') or '-'
-        party = row.get('party', '-') or '-'
-        loading_date = row.get('loading_date_fmt', '-') or '-'
-        driver = row.get('driver_display', '-') or '-'
-        driver_phone = row.get('driver_phone_no', '-') or '-'
+    # Select and rename columns
+    display_cols = {
+        'vehicle_no': 'Vehicle No',
+        'status': 'Status',
+        'speed': 'Speed',
+        'Distance (km)': 'Distance (km)',
+        'location': 'Location',
+        'Ignition': 'Ignition',
+        'trip_status': 'Trip Status',
+        'route': 'Route',
+        'onward_route': 'Onward Route',
+        'party': 'Party',
+        'loading_date_fmt': 'Loading Date',
+        'driver_display': 'Driver',
+        'driver_phone_no': 'Driver Phone',
+        'owner_name': 'Owner Name'
+    }
 
-        owner_name = row.get('owner_name', '-') or '-'
+    # Filter only existing columns
+    existing_cols = [col for col in display_cols.keys() if col in display_df.columns]
+    final_df = display_df[existing_cols].copy()
+    final_df = final_df.rename(columns={k: v for k, v in display_cols.items() if k in existing_cols})
+    final_df = final_df.fillna('-')
 
-        html_table += f'''<tr class="{row_class}">
-            <td class="vehicle">{row['vehicle_no']}</td>
-            <td class="center">{status}</td>
-            <td class="center">{speed}</td>
-            <td class="center">{distance}</td>
-            <td class="left" style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{location}">{location}</td>
-            <td class="center">{ignition}</td>
-            <td class="center">{trip_status}</td>
-            <td class="left">{route}</td>
-            <td class="left">{onward_route}</td>
-            <td class="left" style="max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{party}">{party}</td>
-            <td class="center">{loading_date}</td>
-            <td class="left">{driver}</td>
-            <td class="center">{driver_phone}</td>
-            <td class="left">{owner_name}</td>
-        </tr>'''
-
-    html_table += '</tbody></table></div></body></html>'
-
-    components.html(html_table, height=table_height, scrolling=True)
+    # Display using st.dataframe
+    st.dataframe(final_df, use_container_width=True, height=400)
 
     return nearby_df
 
@@ -4588,11 +4552,10 @@ def reports_fragment():
     """Reports section with 10-minute auto-refresh"""
     show_reports()
 
-@st.fragment(run_every=120)  # Refresh every 2 minutes
 def nearby_vehicles_fragment(df, search_lat, search_lon, search_radius, search_location_name):
-    """Nearby vehicles section with 2-minute auto-refresh"""
-    # Load fresh data on each refresh
-    fresh_df = load_vehicle_data()
+    """Nearby vehicles section"""
+    # Use passed df directly - no fragment to avoid sync issues
+    fresh_df = df
 
     if search_location_name:
         st.info(f"📍 Searching near: **{search_location_name}**")
