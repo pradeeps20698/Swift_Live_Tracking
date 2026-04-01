@@ -4445,13 +4445,13 @@ def show_nearby_vehicles(df, search_lat, search_lon, radius):
         body {{ margin: 0; padding: 0; background-color: transparent; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }}
         .nearby-table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
         .nearby-table th {{ background-color: #505050; color: #FFFFFF; font-weight: bold; text-align: center; border: 1px solid #666; padding: 8px; font-size: 12px; position: sticky; top: 0; z-index: 10; }}
-        .nearby-table td {{ padding: 6px; border: 1px solid #666; color: #000; }}
+        .nearby-table td {{ padding: 6px; border: 1px solid #666; color: #FFFFFF; background-color: #262730; }}
         .nearby-table td.center {{ text-align: center; }}
         .nearby-table td.left {{ text-align: left; }}
         .nearby-table td.vehicle {{ text-align: center; font-weight: 600; }}
-        .nearby-table tr.moving {{ background-color: rgba(144, 238, 144, 0.5); }}
-        .nearby-table tr.idle {{ background-color: rgba(255, 213, 128, 0.6); }}
-        .nearby-table tr.stopped {{ background-color: rgba(220, 120, 130, 0.75); }}
+        .nearby-table tr.moving td {{ background-color: rgba(34, 139, 34, 0.4); }}
+        .nearby-table tr.idle td {{ background-color: rgba(255, 165, 0, 0.4); }}
+        .nearby-table tr.stopped td {{ background-color: rgba(220, 53, 69, 0.4); }}
         .table-container {{ max-height: {table_height - 20}px; overflow-y: auto; overflow-x: auto; }}
     </style>
     </head>
