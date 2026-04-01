@@ -306,39 +306,80 @@ def load_owner_mapping():
     except Exception as e:
         return pd.DataFrame(columns=['normalized_vehicle_no', 'owner_name'])
 
-@st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes
+@st.cache_data(ttl=120, show_spinner=False)  # Cache for 2 minutes - matches database refresh rate
 def load_vehicle_data():
-    """Load latest vehicle tracking data from materialized view.
-    Note: The view should be refreshed periodically via database scheduler or external job.
-    To manually refresh: REFRESH MATERIALIZED VIEW CONCURRENTLY mv_latest_vehicle_positions;
+    """Load latest vehicle tracking data using ROW_NUMBER for live data.
+    - Uses latest recorded_at for date range filter (has index, fast)
+    - Uses ROW_NUMBER ordered by date_time DESC to get latest record per vehicle
+    - Falls back to materialized view for vehicles not seen in 24h
     """
     connection = None
     try:
         connection = get_database_connection()
 
-        # Get latest location for each vehicle from materialized view (fast!)
+        # Step 1: Get MAX(recorded_at) first (very fast ~0.07s)
+        cur = connection.cursor()
+        cur.execute("SELECT MAX(recorded_at) FROM fvts_vehicles")
+        max_recorded_at = cur.fetchone()[0]
+        cur.close()
+
+        # Step 2: Use max_recorded_at as parameter for fast index usage
         query = """
+            WITH live_ranked AS (
+                SELECT
+                    id, vehicle_no, imei, location, date_time, temperature,
+                    ignition, latitude, longitude, speed, angle, odometer, pincode, recorded_at,
+                    ROW_NUMBER() OVER (PARTITION BY vehicle_no ORDER BY date_time DESC, id DESC) AS rnk
+                FROM fvts_vehicles
+                WHERE recorded_at >= %s - INTERVAL '24 hours'
+                  AND latitude IS NOT NULL AND longitude IS NOT NULL
+                  AND latitude <> 0 AND longitude <> 0
+            ),
+            live_data AS (
+                SELECT id, vehicle_no, imei, location, date_time, temperature,
+                       ignition, latitude, longitude, speed, angle, odometer, pincode, recorded_at
+                FROM live_ranked
+                WHERE rnk = 1
+            ),
+            combined AS (
+                SELECT * FROM live_data
+                UNION ALL
+                SELECT id, vehicle_no, imei, location, date_time, temperature,
+                       ignition, latitude, longitude, speed, angle, odometer, pincode, recorded_at
+                FROM mv_latest_vehicle_positions mv
+                WHERE NOT EXISTS (SELECT 1 FROM live_data ld WHERE ld.vehicle_no = mv.vehicle_no)
+            ),
+            last_moving AS (
+                SELECT DISTINCT ON (vehicle_no)
+                    vehicle_no,
+                    date_time AS last_moving_time
+                FROM fvts_vehicles
+                WHERE speed > 0
+                  AND date_time >= NOW() - INTERVAL '7 days'
+                ORDER BY vehicle_no, date_time DESC
+            )
             SELECT
-                id,
-                vehicle_no,
-                imei,
-                location,
-                date_time,
-                temperature,
-                ignition,
-                latitude,
-                longitude,
-                speed,
-                angle,
-                odometer,
-                pincode,
-                recorded_at,
-                last_moving_time
-            FROM mv_latest_vehicle_positions
-            ORDER BY vehicle_no;
+                c.id,
+                c.vehicle_no,
+                c.imei,
+                c.location,
+                c.date_time,
+                c.temperature,
+                c.ignition,
+                c.latitude,
+                c.longitude,
+                c.speed,
+                c.angle,
+                c.odometer,
+                c.pincode,
+                c.recorded_at,
+                lm.last_moving_time
+            FROM combined c
+            LEFT JOIN last_moving lm ON c.vehicle_no = lm.vehicle_no
+            ORDER BY c.vehicle_no;
         """
 
-        df = pd.read_sql_query(query, connection)
+        df = pd.read_sql_query(query, connection, params=(max_recorded_at,))
 
         # Filter out excluded vehicles
         if EXCLUDED_VEHICLES:
@@ -1151,215 +1192,57 @@ def create_sparkline_svg(values, dates):
 
     return svg
 
-@st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes
+@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
 def load_vehicle_load_details():
-    """Load ALL vehicles and map with their load details from swift_trip_log"""
+    """Load ALL vehicles and map with their load details from swift_trip_log.
+    Optimized: Uses recorded_at index for 2-day scan, ROW_NUMBER for monthly KM.
+    Current location comes from load_vehicle_data() - not queried here.
+    """
     connection = None
     try:
         connection = get_database_connection()
 
-        # Query to get ALL vehicles from fvts_vehicles and LEFT JOIN with latest load details
-        # Normalize vehicle number format: "0167 NL01AH" -> "NL01AH0167"
+        # Optimized query using day_wise_gps_km table for KM data (very fast!)
         query = """
             WITH vehicle_today_km AS (
                 SELECT
-                    UPPER(CASE
-                        -- Format: "0167 NL01AH" -> "NL01AH0167"
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        -- Format: "2081NL01AJ" or "2081NL01AJ-S" (starts with 4 digits)
-                        WHEN LENGTH(vehicle_no) >= 9
-                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
-                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
-                            CASE
-                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
-                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                ELSE
-                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                            END
-                        ELSE vehicle_no
-                    END) as vehicle_no,
-                    COALESCE(MAX(odometer) - MIN(odometer), 0) as today_km_traveled
-                FROM fvts_vehicles
-                WHERE vehicle_no IS NOT NULL
-                    AND DATE(date_time) = CURRENT_DATE
-                    AND odometer IS NOT NULL
-                    AND odometer > 0
-                GROUP BY
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        WHEN LENGTH(vehicle_no) >= 9
-                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
-                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
-                            CASE
-                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
-                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                ELSE
-                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                            END
-                        ELSE vehicle_no
-                    END)
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no,
+                    COALESCE(total_km, 0) as today_km_traveled
+                FROM day_wise_gps_km
+                WHERE date = CURRENT_DATE
             ),
             vehicle_yesterday_km AS (
                 SELECT
-                    UPPER(CASE
-                        -- Format: "0167 NL01AH" -> "NL01AH0167"
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        -- Format: "2081NL01AJ" or "2081NL01AJ-S" (starts with 4 digits)
-                        WHEN LENGTH(vehicle_no) >= 9
-                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
-                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
-                            CASE
-                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
-                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                ELSE
-                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                            END
-                        ELSE vehicle_no
-                    END) as vehicle_no,
-                    COALESCE(MAX(odometer) - MIN(odometer), 0) as yesterday_km_traveled
-                FROM fvts_vehicles
-                WHERE vehicle_no IS NOT NULL
-                    AND DATE(date_time) = CURRENT_DATE - INTERVAL '1 day'
-                    AND odometer IS NOT NULL
-                    AND odometer > 0
-                GROUP BY
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        WHEN LENGTH(vehicle_no) >= 9
-                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
-                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
-                            CASE
-                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
-                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                ELSE
-                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                            END
-                        ELSE vehicle_no
-                    END)
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no,
+                    COALESCE(total_km, 0) as yesterday_km_traveled
+                FROM day_wise_gps_km
+                WHERE date = CURRENT_DATE - INTERVAL '1 day'
             ),
             vehicle_month_km AS (
                 SELECT
-                    UPPER(CASE
-                        -- Format: "0167 NL01AH" -> "NL01AH0167"
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        -- Format: "2081NL01AJ" or "2081NL01AJ-S" (starts with 4 digits)
-                        WHEN LENGTH(vehicle_no) >= 9
-                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
-                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
-                            CASE
-                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
-                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                ELSE
-                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                            END
-                        ELSE vehicle_no
-                    END) as vehicle_no,
-                    COALESCE(MAX(odometer) - MIN(odometer), 0) as month_km_traveled
-                FROM fvts_vehicles
-                WHERE vehicle_no IS NOT NULL
-                    AND DATE_TRUNC('month', date_time) = DATE_TRUNC('month', CURRENT_DATE)
-                    AND odometer IS NOT NULL
-                    AND odometer > 0
-                GROUP BY
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        WHEN LENGTH(vehicle_no) >= 9
-                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
-                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
-                            CASE
-                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
-                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                ELSE
-                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                            END
-                        ELSE vehicle_no
-                    END)
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no,
+                    COALESCE(SUM(total_km), 0) as month_km_traveled
+                FROM day_wise_gps_km
+                WHERE date >= DATE_TRUNC('month', CURRENT_DATE)
+                GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
             ),
+            -- Get all unique vehicles from mv_latest_vehicle_positions (already optimized)
             all_vehicles AS (
-                SELECT DISTINCT ON (
-                    UPPER(CASE
-                        -- Format: "0167 NL01AH" -> "NL01AH0167"
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        -- Format: "2081NL01AJ" or "2081NL01AJ-S" (starts with 4 digits)
-                        WHEN LENGTH(vehicle_no) >= 9
-                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
-                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
-                            CASE
-                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
-                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                ELSE
-                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                            END
-                        ELSE vehicle_no
-                    END)
-                )
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        WHEN LENGTH(vehicle_no) >= 9
-                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
-                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
-                            CASE
-                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
-                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                ELSE
-                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                            END
-                        ELSE vehicle_no
-                    END) as vehicle_no,
-                    location as current_location,
-                    speed as current_speed,
-                    ignition as current_ignition
-                FROM fvts_vehicles
+                SELECT DISTINCT
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no
+                FROM mv_latest_vehicle_positions
                 WHERE vehicle_no IS NOT NULL
-                    AND latitude IS NOT NULL
-                    AND longitude IS NOT NULL
-                ORDER BY
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        WHEN LENGTH(vehicle_no) >= 9
-                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
-                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
-                            CASE
-                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
-                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                ELSE
-                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                            END
-                        ELSE vehicle_no
-                    END),
-                    date_time DESC
             ),
+            -- Latest trip per vehicle using ROW_NUMBER based on loading_date DESC
             latest_trip_per_vehicle AS (
-                SELECT DISTINCT ON (normalized_vehicle_no)
-                    normalized_vehicle_no as vehicle_no,
-                    trip_status,
-                    route,
-                    onward_route,
-                    party,
-                    loading_date,
-                    unloading_date,
-                    distance,
-                    driver_name,
-                    driver_code,
-                    driver_phone_no,
-                    created_at
+                SELECT vehicle_no, trip_status, route, onward_route, party,
+                       loading_date, unloading_date, distance, driver_name,
+                       driver_code, driver_phone_no, created_at
                 FROM (
                     SELECT
-                        vehicle_no as original_vehicle_no,
                         UPPER(CASE
-                            -- Format: "0167 NL01AH" -> "NL01AH0167"
-                            WHEN vehicle_no LIKE '% %' THEN
+                            WHEN vehicle_no LIKE '%% %%' THEN
                                 SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                            -- Format: "2081NL01AJ" or "2081NL01AJ-S" (starts with 4 digits)
                             WHEN LENGTH(vehicle_no) >= 9
                                 AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
                                 AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
@@ -1370,26 +1253,33 @@ def load_vehicle_load_details():
                                         SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
                                 END
                             ELSE vehicle_no
-                        END) as normalized_vehicle_no,
-                        CASE
-                            WHEN trip_status IS NULL OR trip_status = '' THEN 'Loaded'
-                            ELSE trip_status
-                        END as trip_status,
-                        route,
-                        onward_route,
-                        party,
-                        loading_date,
-                        unloading_date,
+                        END) as vehicle_no,
+                        COALESCE(NULLIF(trip_status, ''), 'Loaded') as trip_status,
+                        route, onward_route, party, loading_date, unloading_date,
                         COALESCE(distance, 0) as distance,
-                        driver_name,
-                        driver_code,
-                        driver_phone_no,
-                        created_at
+                        driver_name, driver_code, driver_phone_no, created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY UPPER(CASE
+                                WHEN vehicle_no LIKE '%% %%' THEN
+                                    SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                                WHEN LENGTH(vehicle_no) >= 9
+                                    AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                                    AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                                    CASE
+                                        WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                            SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                        ELSE
+                                            SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                    END
+                                ELSE vehicle_no
+                            END)
+                            ORDER BY loading_date DESC NULLS LAST
+                        ) as rn
                     FROM swift_trip_log
                     WHERE vehicle_no IS NOT NULL
-                        AND is_active = true
-                ) normalized
-                ORDER BY normalized_vehicle_no, loading_date DESC NULLS LAST, created_at DESC
+                      AND is_active = true
+                ) ranked
+                WHERE rn = 1
             )
             SELECT
                 av.vehicle_no,
@@ -2011,40 +1901,22 @@ def show_load_details():
         use_container_width=False
     )
 
-@st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes
+@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
 def load_trip_km_by_days_data():
-    """Load trip data with daily GPS KM from loading date"""
+    """Load trip data with daily GPS KM from loading date (optimized)"""
     connection = None
     try:
         connection = get_database_connection()
 
         # First get the base trip data with loading dates
+        # Using mv_latest_vehicle_positions for all_vehicles (fast)
         base_query = """
             WITH all_vehicles AS (
-                SELECT DISTINCT ON (
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        ELSE vehicle_no
-                    END)
-                )
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        ELSE vehicle_no
-                    END) as vehicle_no,
+                SELECT DISTINCT
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no,
                     vehicle_no as original_vehicle_no
-                FROM fvts_vehicles
+                FROM mv_latest_vehicle_positions
                 WHERE vehicle_no IS NOT NULL
-                    AND latitude IS NOT NULL
-                    AND longitude IS NOT NULL
-                ORDER BY
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        ELSE vehicle_no
-                    END),
-                    date_time DESC
             ),
             latest_trip_per_vehicle AS (
                 SELECT DISTINCT ON (normalized_vehicle_no)
@@ -2108,28 +1980,15 @@ def load_trip_km_by_days_data():
         if 'loading_date' in df.columns:
             df['loading_date'] = pd.to_datetime(df['loading_date'], errors='coerce')
 
-        # Now get daily GPS KM data for all vehicles
+        # Get daily GPS KM from pre-calculated day_wise_gps_km table (fast!)
         daily_km_query = """
             SELECT
-                UPPER(CASE
-                    WHEN vehicle_no LIKE '% %' THEN
-                        SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                    ELSE vehicle_no
-                END) as vehicle_no,
-                DATE(date_time) as km_date,
-                COALESCE(MAX(odometer) - MIN(odometer), 0) as daily_km
-            FROM fvts_vehicles
-            WHERE vehicle_no IS NOT NULL
-                AND odometer IS NOT NULL
-                AND date_time >= CURRENT_DATE - INTERVAL '30 days'
-            GROUP BY
-                UPPER(CASE
-                    WHEN vehicle_no LIKE '% %' THEN
-                        SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                    ELSE vehicle_no
-                END),
-                DATE(date_time)
-            ORDER BY vehicle_no, km_date;
+                UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no,
+                date as km_date,
+                COALESCE(total_km, 0) as daily_km
+            FROM day_wise_gps_km
+            WHERE date >= CURRENT_DATE - INTERVAL '30 days'
+            ORDER BY vehicle_no, date;
         """
 
         daily_km_df = pd.read_sql_query(daily_km_query, connection)
@@ -2184,31 +2043,26 @@ def get_night_driving_live_data():
     try:
         connection = get_database_connection()
 
-        # Live night driving query
+        # Live night driving query (optimized with recorded_at index + ROW_NUMBER)
         live_query = """
-            SELECT DISTINCT ON (normalized_vehicle_no)
-                vehicle_no,
-                speed,
-                location,
-                date_time,
-                normalized_vehicle_no
+            SELECT vehicle_no, speed, location, date_time, normalized_vehicle_no
             FROM (
                 SELECT
                     f.vehicle_no,
                     f.speed,
                     f.location,
                     f.date_time,
-                    UPPER(CASE
-                        WHEN f.vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(f.vehicle_no, ' ', 2) || SPLIT_PART(f.vehicle_no, ' ', 1)
-                        ELSE f.vehicle_no
-                    END) as normalized_vehicle_no
+                    UPPER(REPLACE(REPLACE(f.vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY UPPER(REPLACE(REPLACE(f.vehicle_no, ' ', ''), '-', ''))
+                        ORDER BY f.date_time DESC
+                    ) as rn
                 FROM fvts_vehicles f
-                WHERE f.speed > 0
+                WHERE f.recorded_at >= NOW() - INTERVAL '10 minutes'
+                    AND f.speed > 0
                     AND f.ignition = 1
-                    AND f.date_time >= NOW() - INTERVAL '10 minutes'
-            ) sub
-            ORDER BY normalized_vehicle_no, date_time DESC
+            ) ranked
+            WHERE rn = 1
         """
         live_df = pd.read_sql_query(live_query, connection)
 
@@ -2291,20 +2145,18 @@ def get_night_driving_summary_data():
     try:
         connection = get_database_connection()
 
+        # Optimized with recorded_at index
         query = """
             WITH night_data AS (
                 SELECT
                     vehicle_no,
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        ELSE vehicle_no
-                    END) as normalized_vehicle_no,
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
                     speed,
                     location,
                     date_time
                 FROM fvts_vehicles
-                WHERE speed > 0
+                WHERE recorded_at >= CURRENT_DATE - INTERVAL '2 days'
+                    AND speed > 0
                     AND ignition = 1
                     AND (
                         (date_time >= (CURRENT_DATE - INTERVAL '1 day' + INTERVAL '23 hours'))
@@ -2362,22 +2214,15 @@ def get_night_driving_summary_data():
             ),
             monthly_night_stats AS (
                 SELECT
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        ELSE vehicle_no
-                    END) as normalized_vehicle_no,
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
                     COUNT(DISTINCT DATE(date_time)) as month_night_days
                 FROM fvts_vehicles
-                WHERE speed > 0
+                WHERE recorded_at >= DATE_TRUNC('month', CURRENT_DATE)
+                    AND speed > 0
                     AND ignition = 1
                     AND date_time >= DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
                     AND (EXTRACT(HOUR FROM date_time) >= 23 OR EXTRACT(HOUR FROM date_time) < 6)
-                GROUP BY UPPER(CASE
-                    WHEN vehicle_no LIKE '% %' THEN
-                        SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                    ELSE vehicle_no
-                END)
+                GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
             )
             SELECT
                 nd.vehicle_no,
@@ -2418,29 +2263,11 @@ def get_idle_time_data():
     try:
         connection = get_database_connection()
         idle_query = """
-            WITH last_movement AS (
-                SELECT
-                    vehicle_no,
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        ELSE vehicle_no
-                    END) as normalized_vehicle_no,
-                    MAX(date_time) as last_moving_time
-                FROM fvts_vehicles
-                WHERE speed > 5
-                    AND date_time >= NOW() - INTERVAL '7 days'
-                GROUP BY vehicle_no, UPPER(CASE
-                    WHEN vehicle_no LIKE '% %' THEN
-                        SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                    ELSE vehicle_no
-                END)
-            )
             SELECT
-                normalized_vehicle_no,
+                UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
                 last_moving_time,
                 EXTRACT(EPOCH FROM (NOW() AT TIME ZONE 'Asia/Kolkata' - last_moving_time))/3600 as idle_hours
-            FROM last_movement
+            FROM mv_last_movement
         """
         idle_df = pd.read_sql_query(idle_query, connection)
         return idle_df
@@ -2951,27 +2778,25 @@ def show_status_summary(df):
             except:
                 pass
 
-@st.cache_data(ttl=60, show_spinner=False)  # Cache for 60 seconds
+@st.cache_data(ttl=60, show_spinner=False)  # Cache for 1 minute
 def get_overspeed_data():
     """Cached function to get overspeed data from database"""
     connection = None
     try:
         connection = get_database_connection()
 
-        # Query for 24h overspeed summary - uses cached materialized view for speed
+        # Query for 24h overspeed summary - uses recorded_at index for fast filtering
         query = """
             WITH overspeed_data AS (
                 SELECT
                     f.vehicle_no,
-                    UPPER(CASE
-                        WHEN f.vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(f.vehicle_no, ' ', 2) || SPLIT_PART(f.vehicle_no, ' ', 1)
-                        ELSE f.vehicle_no
-                    END) as normalized_vehicle_no,
+                    UPPER(REPLACE(REPLACE(f.vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
                     f.speed,
                     f.location,
                     f.date_time
-                FROM mv_overspeed_24h f
+                FROM fvts_vehicles f
+                WHERE f.recorded_at >= NOW() - INTERVAL '24 hours'
+                    AND f.speed > 60
             ),
             max_speed_locations AS (
                 SELECT DISTINCT ON (vehicle_no)
@@ -2996,20 +2821,7 @@ def get_overspeed_data():
             ),
             driver_info AS (
                 SELECT DISTINCT ON (normalized_vehicle_no)
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        WHEN LENGTH(vehicle_no) >= 9
-                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
-                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
-                            CASE
-                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
-                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                ELSE
-                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                            END
-                        ELSE vehicle_no
-                    END) as normalized_vehicle_no,
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
                     driver_name,
                     driver_code,
                     driver_phone_no
@@ -3019,37 +2831,18 @@ def get_overspeed_data():
                     AND driver_name IS NOT NULL
                     AND driver_name != ''
                 ORDER BY
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        WHEN LENGTH(vehicle_no) >= 9
-                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
-                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
-                            CASE
-                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
-                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                ELSE
-                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                            END
-                        ELSE vehicle_no
-                    END),
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')),
                     loading_date DESC NULLS LAST
             ),
             monthly_overspeed_stats AS (
                 SELECT
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        ELSE vehicle_no
-                    END) as normalized_vehicle_no,
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
                     COUNT(*) as month_overspeed_count,
                     COUNT(DISTINCT DATE(date_time)) as month_overspeed_days
-                FROM mv_overspeed_monthly
-                GROUP BY UPPER(CASE
-                    WHEN vehicle_no LIKE '% %' THEN
-                        SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                    ELSE vehicle_no
-                END)
+                FROM fvts_vehicles
+                WHERE recorded_at >= DATE_TRUNC('month', CURRENT_DATE)
+                    AND speed > 60
+                GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
             )
             SELECT
                 os.vehicle_no,
@@ -3072,22 +2865,22 @@ def get_overspeed_data():
         """
         overspeed_df = pd.read_sql_query(query, connection)
 
-        # Live overspeed query with driver info from swift_trip_log
+        # Live overspeed query with driver info from swift_trip_log - optimized with recorded_at index
         live_query = """
             WITH latest_records AS (
-                SELECT DISTINCT ON (vehicle_no)
-                    vehicle_no,
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        ELSE vehicle_no
-                    END) as normalized_vehicle_no,
-                    speed,
-                    location,
-                    date_time,
-                    ignition
-                FROM fvts_vehicles
-                ORDER BY vehicle_no, date_time DESC
+                SELECT vehicle_no, normalized_vehicle_no, speed, location, date_time, ignition
+                FROM (
+                    SELECT
+                        vehicle_no,
+                        UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
+                        speed,
+                        location,
+                        date_time,
+                        ignition,
+                        ROW_NUMBER() OVER (PARTITION BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) ORDER BY date_time DESC) as rn
+                    FROM fvts_vehicles
+                    WHERE recorded_at >= NOW() - INTERVAL '10 minutes'
+                ) ranked WHERE rn = 1
             ),
             overspeed_vehicles AS (
                 SELECT
@@ -3104,36 +2897,17 @@ def get_overspeed_data():
             ),
             monthly_overspeed_stats AS (
                 SELECT
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        ELSE vehicle_no
-                    END) as normalized_vehicle_no,
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
                     COUNT(*) as month_overspeed_count,
                     COUNT(DISTINCT DATE(date_time)) as month_overspeed_days
-                FROM mv_overspeed_monthly
-                GROUP BY UPPER(CASE
-                    WHEN vehicle_no LIKE '% %' THEN
-                        SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                    ELSE vehicle_no
-                END)
+                FROM fvts_vehicles
+                WHERE recorded_at >= DATE_TRUNC('month', CURRENT_DATE)
+                    AND speed > 60
+                GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
             ),
             driver_info AS (
                 SELECT DISTINCT ON (normalized_vehicle_no)
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        WHEN LENGTH(vehicle_no) >= 9
-                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
-                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
-                            CASE
-                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
-                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                ELSE
-                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                            END
-                        ELSE vehicle_no
-                    END) as normalized_vehicle_no,
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
                     driver_name,
                     driver_code,
                     driver_phone_no
@@ -3143,20 +2917,7 @@ def get_overspeed_data():
                     AND driver_name IS NOT NULL
                     AND driver_name != ''
                 ORDER BY
-                    UPPER(CASE
-                        WHEN vehicle_no LIKE '% %' THEN
-                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                        WHEN LENGTH(vehicle_no) >= 9
-                            AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
-                            AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
-                            CASE
-                                WHEN POSITION('-' IN vehicle_no) > 0 THEN
-                                    SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                                ELSE
-                                    SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
-                            END
-                        ELSE vehicle_no
-                    END),
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')),
                     loading_date DESC NULLS LAST
             )
             SELECT
@@ -4770,9 +4531,9 @@ def overspeed_fragment(df):
     """Overspeed section with 60-second auto-refresh"""
     show_overspeed_alerts(df)
 
-@st.fragment(run_every=600)  # Refresh every 10 minutes
+@st.fragment(run_every=120)  # Refresh every 2 minutes
 def map_fragment(df):
-    """Map section with 10-minute auto-refresh"""
+    """Map section with 2-minute auto-refresh"""
     st.subheader("🗺️ Swift Live Vehicle Locations")
     show_map(df)
     st.markdown("""
@@ -4782,19 +4543,19 @@ def map_fragment(df):
     - 🔴 Red: Stopped (No update for 6+ hours AND Ignition OFF)
     """)
 
-@st.fragment(run_every=600)  # Refresh every 10 minutes
+@st.fragment(run_every=120)  # Refresh every 2 minutes
 def vehicle_list_fragment(df):
-    """Vehicle list section with 10-minute auto-refresh"""
+    """Vehicle list section with 2-minute auto-refresh"""
     show_vehicle_list(df)
 
-@st.fragment(run_every=600)  # Refresh every 10 minutes
+@st.fragment(run_every=300)  # Refresh every 5 minutes
 def load_details_fragment():
-    """Load details section with 10-minute auto-refresh"""
+    """Load details section with 5-minute auto-refresh"""
     show_load_details()
 
-@st.fragment(run_every=600)  # Refresh every 10 minutes
+@st.fragment(run_every=300)  # Refresh every 5 minutes
 def driver_at_home_fragment(df):
-    """Driver at home section with 10-minute auto-refresh"""
+    """Driver at home section with 5-minute auto-refresh"""
     show_driver_at_home(df)
 
 @st.fragment(run_every=600)  # Refresh every 10 minutes
@@ -4802,9 +4563,9 @@ def reports_fragment():
     """Reports section with 10-minute auto-refresh"""
     show_reports()
 
-@st.fragment(run_every=600)  # Refresh every 10 minutes
+@st.fragment(run_every=120)  # Refresh every 2 minutes
 def nearby_vehicles_fragment(df, search_lat, search_lon, search_radius, search_location_name):
-    """Nearby vehicles section with 10-minute auto-refresh"""
+    """Nearby vehicles section with 2-minute auto-refresh"""
     if search_location_name:
         st.info(f"📍 Searching near: **{search_location_name}**")
     else:
