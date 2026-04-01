@@ -1717,10 +1717,10 @@ def show_load_details():
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             }}
             .load-details-table {{
-                width: max-content;
+                width: 100%;
                 border-collapse: collapse;
                 font-size: 12px;
-                table-layout: auto;
+                table-layout: fixed;
             }}
             .load-details-table th {{
                 background-color: #1e1e1e;
@@ -1728,22 +1728,39 @@ def show_load_details():
                 font-weight: bold;
                 text-align: center;
                 border: 1px solid #444;
-                padding: 10px 12px;
+                padding: 10px 8px;
                 font-size: 12px;
                 position: sticky;
                 top: 0;
                 z-index: 10;
                 white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }}
             .load-details-table td {{
                 border: 1px solid #333;
-                padding: 6px 10px;
+                padding: 6px 8px;
                 color: #FFFFFF;
                 background-color: #262730;
-                overflow: visible;
-                text-overflow: clip;
+                overflow: hidden;
+                text-overflow: ellipsis;
                 white-space: nowrap;
             }}
+            .load-details-table th:nth-child(1) {{ width: 90px; }}
+            .load-details-table th:nth-child(2) {{ width: 70px; }}
+            .load-details-table th:nth-child(3) {{ width: 100px; }}
+            .load-details-table th:nth-child(4) {{ width: 200px; }}
+            .load-details-table th:nth-child(5) {{ width: 150px; }}
+            .load-details-table th:nth-child(6) {{ width: 220px; }}
+            .load-details-table th:nth-child(7) {{ width: 130px; }}
+            .load-details-table th:nth-child(8) {{ width: 180px; }}
+            .load-details-table th:nth-child(9) {{ width: 100px; }}
+            .load-details-table th:nth-child(10) {{ width: 90px; }}
+            .load-details-table th:nth-child(11) {{ width: 100px; }}
+            .load-details-table th:nth-child(12) {{ width: 100px; }}
+            .load-details-table th:nth-child(13) {{ width: 80px; }}
+            .load-details-table th:nth-child(14) {{ width: 280px; }}
+            .load-details-table th:nth-child(15) {{ width: 120px; }}
             .load-details-table tr:hover td {{
                 background-color: rgba(66, 165, 245, 0.2);
             }}
@@ -1751,50 +1768,28 @@ def show_load_details():
                 text-align: center;
                 font-weight: 700;
                 color: #4FC3F7;
-                white-space: nowrap;
-                width: fit-content;
-                padding: 6px 10px;
             }}
             .load-details-table .center {{
                 text-align: center;
-                white-space: nowrap;
-                width: fit-content;
-                padding: 6px 10px;
             }}
             .load-details-table .left {{
                 text-align: left;
-                white-space: nowrap;
-                width: fit-content;
-                padding: 6px 10px;
             }}
             .load-details-table .route-cell {{
                 text-align: left;
-                white-space: nowrap;
-                width: fit-content;
-                padding: 6px 10px;
             }}
             .load-details-table .party-cell {{
                 text-align: left;
-                white-space: nowrap;
-                width: fit-content;
-                padding: 6px 10px;
             }}
             .load-details-table .driver-cell {{
                 text-align: left;
-                white-space: nowrap;
-                width: fit-content;
-                padding: 6px 10px;
             }}
             .load-details-table .owner-cell {{
                 text-align: left;
-                white-space: nowrap;
-                width: fit-content;
-                padding: 6px 10px;
             }}
             .load-details-table .trend-cell {{
                 text-align: center;
-                padding: 4px 10px;
-                width: fit-content;
+                padding: 4px;
             }}
             .load-details-table .early {{
                 background-color: rgba(34, 139, 34, 0.4) !important;
@@ -1814,8 +1809,7 @@ def show_load_details():
                 max-height: {table_height - 20}px;
                 overflow-y: auto;
                 overflow-x: auto;
-                width: max-content;
-                min-width: 100%;
+                width: 100%;
             }}
         </style>
         </head>
