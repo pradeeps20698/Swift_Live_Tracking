@@ -2821,7 +2821,11 @@ def get_overspeed_data():
             ),
             driver_info AS (
                 SELECT DISTINCT ON (normalized_vehicle_no)
-                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
+                    UPPER(REPLACE(CASE
+                        WHEN vehicle_no LIKE '% %' THEN
+                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        ELSE vehicle_no
+                    END, '-', '')) as normalized_vehicle_no,
                     driver_name,
                     driver_code,
                     driver_phone_no
@@ -2831,7 +2835,11 @@ def get_overspeed_data():
                     AND driver_name IS NOT NULL
                     AND driver_name != ''
                 ORDER BY
-                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')),
+                    UPPER(REPLACE(CASE
+                        WHEN vehicle_no LIKE '% %' THEN
+                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        ELSE vehicle_no
+                    END, '-', '')),
                     loading_date DESC NULLS LAST
             ),
             monthly_overspeed_stats AS (
@@ -2907,7 +2915,11 @@ def get_overspeed_data():
             ),
             driver_info AS (
                 SELECT DISTINCT ON (normalized_vehicle_no)
-                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
+                    UPPER(REPLACE(CASE
+                        WHEN vehicle_no LIKE '% %' THEN
+                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        ELSE vehicle_no
+                    END, '-', '')) as normalized_vehicle_no,
                     driver_name,
                     driver_code,
                     driver_phone_no
@@ -2917,7 +2929,11 @@ def get_overspeed_data():
                     AND driver_name IS NOT NULL
                     AND driver_name != ''
                 ORDER BY
-                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')),
+                    UPPER(REPLACE(CASE
+                        WHEN vehicle_no LIKE '% %' THEN
+                            SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                        ELSE vehicle_no
+                    END, '-', '')),
                     loading_date DESC NULLS LAST
             )
             SELECT
