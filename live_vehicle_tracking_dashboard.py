@@ -251,44 +251,10 @@ def get_database_connection():
         keepalives_count=3
     )
 
+# NOTE: Materialized views removed - all queries now use live data with recorded_at index
 def refresh_all_materialized_views():
-    """Refresh all materialized views in background thread"""
-    import threading
-
-    def _refresh():
-        connection = None
-        try:
-            connection = get_database_connection()
-            connection.autocommit = True
-            cur = connection.cursor()
-
-            # Refresh views with unique index (concurrent)
-            for view in ["mv_latest_vehicle_positions", "mv_last_movement"]:
-                try:
-                    cur.execute(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {view}")
-                except:
-                    pass
-
-            # Refresh views without unique index (regular)
-            for view in ["mv_overspeed_24h", "mv_overspeed_monthly", "mv_night_driving", "mv_night_driving_monthly"]:
-                try:
-                    cur.execute(f"REFRESH MATERIALIZED VIEW {view}")
-                except:
-                    pass
-
-            cur.close()
-        except:
-            pass
-        finally:
-            if connection:
-                try:
-                    connection.close()
-                except:
-                    pass
-
-    # Run in background thread so it doesn't block the page
-    thread = threading.Thread(target=_refresh, daemon=True)
-    thread.start()
+    """No longer refreshes MVs - all queries now use live data"""
+    pass  # All queries now use live data with recorded_at index
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_owner_mapping():
@@ -311,7 +277,7 @@ def load_vehicle_data():
     """Load latest vehicle tracking data using ROW_NUMBER for live data.
     - Uses latest recorded_at for date range filter (has index, fast)
     - Uses ROW_NUMBER ordered by date_time DESC to get latest record per vehicle
-    - Falls back to materialized view for vehicles not seen in 24h
+    - Live query only - no materialized views
     """
     connection = None
     try:
@@ -341,42 +307,34 @@ def load_vehicle_data():
                 FROM live_ranked
                 WHERE rnk = 1
             ),
-            combined AS (
-                SELECT * FROM live_data
-                UNION ALL
-                SELECT id, vehicle_no, imei, location, date_time, temperature,
-                       ignition, latitude, longitude, speed, angle, odometer, pincode, recorded_at
-                FROM mv_latest_vehicle_positions mv
-                WHERE NOT EXISTS (SELECT 1 FROM live_data ld WHERE ld.vehicle_no = mv.vehicle_no)
-            ),
             last_moving AS (
-                SELECT DISTINCT ON (vehicle_no)
-                    vehicle_no,
-                    date_time AS last_moving_time
+                SELECT
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
+                    MAX(date_time) AS last_moving_time
                 FROM fvts_vehicles
-                WHERE speed > 0
-                  AND date_time >= NOW() - INTERVAL '7 days'
-                ORDER BY vehicle_no, date_time DESC
+                WHERE recorded_at >= NOW() - INTERVAL '7 days'
+                  AND speed > 5
+                GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
             )
             SELECT
-                c.id,
-                c.vehicle_no,
-                c.imei,
-                c.location,
-                c.date_time,
-                c.temperature,
-                c.ignition,
-                c.latitude,
-                c.longitude,
-                c.speed,
-                c.angle,
-                c.odometer,
-                c.pincode,
-                c.recorded_at,
+                ld.id,
+                ld.vehicle_no,
+                ld.imei,
+                ld.location,
+                ld.date_time,
+                ld.temperature,
+                ld.ignition,
+                ld.latitude,
+                ld.longitude,
+                ld.speed,
+                ld.angle,
+                ld.odometer,
+                ld.pincode,
+                ld.recorded_at,
                 lm.last_moving_time
-            FROM combined c
-            LEFT JOIN last_moving lm ON c.vehicle_no = lm.vehicle_no
-            ORDER BY c.vehicle_no;
+            FROM live_data ld
+            LEFT JOIN last_moving lm ON UPPER(REPLACE(REPLACE(ld.vehicle_no, ' ', ''), '-', '')) = lm.normalized_vehicle_no
+            ORDER BY ld.vehicle_no;
         """
 
         df = pd.read_sql_query(query, connection, params=(max_recorded_at,))
@@ -1230,12 +1188,13 @@ def load_vehicle_load_details():
                 WHERE date >= DATE_TRUNC('month', CURRENT_DATE)
                 GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
             ),
-            -- Get all unique vehicles from mv_latest_vehicle_positions (already optimized)
+            -- Get all unique vehicles from live data (uses recorded_at index)
             all_vehicles AS (
                 SELECT DISTINCT
                     UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no
-                FROM mv_latest_vehicle_positions
-                WHERE vehicle_no IS NOT NULL
+                FROM fvts_vehicles
+                WHERE recorded_at >= NOW() - INTERVAL '24 hours'
+                    AND vehicle_no IS NOT NULL
             ),
             -- Latest trip per vehicle using ROW_NUMBER based on loading_date DESC
             latest_trip_per_vehicle AS (
@@ -1918,14 +1877,15 @@ def load_trip_km_by_days_data():
         connection = get_database_connection()
 
         # First get the base trip data with loading dates
-        # Using mv_latest_vehicle_positions for all_vehicles (fast)
+        # Using live query from fvts_vehicles (uses recorded_at index)
         base_query = """
             WITH all_vehicles AS (
                 SELECT DISTINCT
                     UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no,
                     vehicle_no as original_vehicle_no
-                FROM mv_latest_vehicle_positions
-                WHERE vehicle_no IS NOT NULL
+                FROM fvts_vehicles
+                WHERE recorded_at >= NOW() - INTERVAL '24 hours'
+                    AND vehicle_no IS NOT NULL
             ),
             latest_trip_per_vehicle AS (
                 SELECT DISTINCT ON (normalized_vehicle_no)
@@ -2119,21 +2079,19 @@ def get_night_driving_live_data():
         """
         driver_df = pd.read_sql_query(driver_query, connection)
 
-        # Monthly night driving stats - uses cached materialized view
+        # Monthly night driving stats - live query with recorded_at index
         monthly_night_query = """
             SELECT
-                UPPER(CASE
-                    WHEN vehicle_no LIKE '% %' THEN
-                        SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                    ELSE vehicle_no
-                END) as normalized_vehicle_no,
+                UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
                 COUNT(DISTINCT DATE(date_time)) as month_night_days
-            FROM mv_night_driving_monthly
-            GROUP BY UPPER(CASE
-                WHEN vehicle_no LIKE '% %' THEN
-                    SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
-                ELSE vehicle_no
-            END)
+            FROM fvts_vehicles
+            WHERE recorded_at >= DATE_TRUNC('month', CURRENT_DATE)
+                AND speed > 0
+                AND (
+                    EXTRACT(HOUR FROM date_time AT TIME ZONE 'Asia/Kolkata') >= 22
+                    OR EXTRACT(HOUR FROM date_time AT TIME ZONE 'Asia/Kolkata') < 5
+                )
+            GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
         """
         monthly_night_df = pd.read_sql_query(monthly_night_query, connection)
 
@@ -2271,12 +2229,22 @@ def get_idle_time_data():
     connection = None
     try:
         connection = get_database_connection()
+        # Live query instead of mv_last_movement - uses recorded_at index
         idle_query = """
+            WITH last_movement AS (
+                SELECT
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
+                    MAX(date_time) as last_moving_time
+                FROM fvts_vehicles
+                WHERE recorded_at >= NOW() - INTERVAL '7 days'
+                    AND speed > 5
+                GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
+            )
             SELECT
-                UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
+                normalized_vehicle_no,
                 last_moving_time,
                 EXTRACT(EPOCH FROM (NOW() AT TIME ZONE 'Asia/Kolkata' - last_moving_time))/3600 as idle_hours
-            FROM mv_last_movement
+            FROM last_movement
         """
         idle_df = pd.read_sql_query(idle_query, connection)
         return idle_df
