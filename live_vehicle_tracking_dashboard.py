@@ -1703,7 +1703,7 @@ def show_load_details():
 
         # Build HTML table to render SVG sparklines
         num_rows = len(display_df)
-        table_height = min(600, 60 + num_rows * 45)  # Dynamic height based on rows
+        table_height = 500  # Fixed height - only rows change, not container
 
         html_table = f'''
         <!DOCTYPE html>
