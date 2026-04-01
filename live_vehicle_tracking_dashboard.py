@@ -4464,7 +4464,9 @@ def show_nearby_vehicles(df, search_lat, search_lon, radius):
     final_df = final_df.fillna('-')
 
     # Display using st.dataframe
-    st.dataframe(final_df, use_container_width=True, height=400)
+    # Auto height based on rows: 35px per row + 40px header, max 500px
+    auto_height = min(500, 40 + len(final_df) * 35)
+    st.dataframe(final_df, use_container_width=True, height=auto_height)
 
     return nearby_df
 
