@@ -1717,8 +1717,7 @@ def show_load_details():
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             }}
             .load-details-table {{
-                width: max-content;
-                min-width: 100%;
+                width: auto;
                 border-collapse: collapse;
                 font-size: 12px;
                 table-layout: auto;
@@ -1729,19 +1728,21 @@ def show_load_details():
                 font-weight: bold;
                 text-align: center;
                 border: 1px solid #444;
-                padding: 10px 6px;
+                padding: 10px 12px;
                 font-size: 12px;
                 position: sticky;
                 top: 0;
                 z-index: 10;
+                white-space: nowrap;
             }}
             .load-details-table td {{
                 border: 1px solid #333;
-                padding: 6px;
+                padding: 6px 10px;
                 color: #FFFFFF;
                 background-color: #262730;
                 overflow: visible;
                 text-overflow: clip;
+                white-space: nowrap;
             }}
             .load-details-table tr:hover td {{
                 background-color: rgba(66, 165, 245, 0.2);
@@ -1750,42 +1751,50 @@ def show_load_details():
                 text-align: center;
                 font-weight: 700;
                 color: #4FC3F7;
-                min-width: 100px;
                 white-space: nowrap;
+                width: fit-content;
+                padding: 6px 10px;
             }}
             .load-details-table .center {{
                 text-align: center;
                 white-space: nowrap;
+                width: fit-content;
+                padding: 6px 10px;
             }}
             .load-details-table .left {{
                 text-align: left;
-                min-width: 120px;
+                white-space: nowrap;
+                width: fit-content;
+                padding: 6px 10px;
             }}
             .load-details-table .route-cell {{
                 text-align: left;
-                min-width: 250px;
                 white-space: nowrap;
+                width: fit-content;
+                padding: 6px 10px;
             }}
             .load-details-table .party-cell {{
                 text-align: left;
-                min-width: 220px;
                 white-space: nowrap;
+                width: fit-content;
+                padding: 6px 10px;
             }}
             .load-details-table .driver-cell {{
                 text-align: left;
-                min-width: 140px;
                 white-space: nowrap;
+                width: fit-content;
+                padding: 6px 10px;
             }}
             .load-details-table .owner-cell {{
                 text-align: left;
-                min-width: 150px;
                 white-space: nowrap;
+                width: fit-content;
+                padding: 6px 10px;
             }}
             .load-details-table .trend-cell {{
                 text-align: center;
-                padding: 4px;
-                min-width: 320px;
-                max-width: 400px;
+                padding: 4px 10px;
+                width: fit-content;
             }}
             .load-details-table .early {{
                 background-color: rgba(34, 139, 34, 0.4) !important;
