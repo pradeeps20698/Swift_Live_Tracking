@@ -54,6 +54,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Require login + dashboard permission
+from swift_auth_child import require_dashboard_access
+_auth_user = require_dashboard_access("live_tracking")
+
 # Custom CSS
 st.markdown("""
 <style>
