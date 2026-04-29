@@ -33,12 +33,12 @@ CUSTOM_OWNER_MAPPING = {
     'HR55AN4660': 'Ranjeet Singh Logistics',
     'HR55AN7527': 'Ranjeet Singh Logistics',
     # R.sai Logistics India Pvt. Ltd.
-    'HR55AN5406': 'R.sai Logistics India Pvt. Ltd.',
+    'HR55AN5406': 'PICKALL LOGISTICS PRIVATE LIMITED',
     'HR55AM2340': 'R.sai Logistics India Pvt. Ltd.',
     'NL01Q8157': 'R.sai Logistics India Pvt. Ltd.',
     'HR55AM9667': 'R.sai Logistics India Pvt. Ltd.',
     'HR55AP1974': 'R.sai Logistics India Pvt. Ltd.',
-    'HR55AM8703': 'R.sai Logistics India Pvt. Ltd.',
+    'HR55AM8703': 'PICKALL LOGISTICS PRIVATE LIMITED',
     'HR55AM0907': 'R.sai Logistics India Pvt. Ltd.',
     'HR55AM1370': 'R.sai Logistics India Pvt. Ltd.',
     'HR55AM6059': 'R.sai Logistics India Pvt. Ltd.',
@@ -611,7 +611,8 @@ def show_overview_metrics(df):
     swaraj_vehicles = len(df[df['owner_name'].str.contains('SWARAJ', case=False, na=False)]) if 'owner_name' in df.columns else 0
     ranjeet_vehicles = len(df[df['owner_name'] == 'Ranjeet Singh Logistics']) if 'owner_name' in df.columns else 0
     rsai_vehicles = len(df[df['owner_name'] == 'R.sai Logistics India Pvt. Ltd.']) if 'owner_name' in df.columns else 0
-    other_vehicles = total_vehicles - own_vehicles - swaraj_vehicles - ranjeet_vehicles - rsai_vehicles
+    pickall_vehicles = len(df[df['owner_name'] == 'PICKALL LOGISTICS PRIVATE LIMITED']) if 'owner_name' in df.columns else 0
+    other_vehicles = total_vehicles - own_vehicles - swaraj_vehicles - ranjeet_vehicles - rsai_vehicles - pickall_vehicles
 
     with col1:
         st.metric(
@@ -621,7 +622,7 @@ def show_overview_metrics(df):
         # Show bifurcation below total
         st.markdown(f"""
         <div style="font-size: 1.1rem; color: #888; margin-top: -10px; line-height: 1.4;">
-            Own: {own_vehicles} | Swaraj: {swaraj_vehicles} | Ranjeet: {ranjeet_vehicles} | R.sai: {rsai_vehicles}
+            Own: {own_vehicles} | Swaraj: {swaraj_vehicles} | Ranjeet: {ranjeet_vehicles} | R.sai: {rsai_vehicles} | Pickall: {pickall_vehicles}
         </div>
         """, unsafe_allow_html=True)
 
