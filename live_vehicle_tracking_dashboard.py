@@ -331,6 +331,7 @@ def load_vehicle_data():
                 FROM fvts_vehicles
                 WHERE recorded_at >= NOW() - INTERVAL '30 days'
                   AND speed > 0
+                  AND ignition = 1
                 GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
             )
             SELECT
@@ -378,12 +379,16 @@ def load_vehicle_data():
         df['hours_ago'] = total_secs / 3600
 
         # Determine status (vectorized)
+        # Moving = Ignition ON AND Speed > 0
+        # Idle = Ignition OFF (regardless of speed - GPS drift)
+        # Stopped = No update for 6+ hours AND Ignition OFF
         hours_ago = df['hours_ago']
         speed = df['speed'].fillna(0)
         ignition = df['ignition'].fillna(0)
         df['status'] = 'Unknown'
-        df.loc[speed == 0, 'status'] = 'Idle'
-        df.loc[speed > 0, 'status'] = 'Moving'
+        df.loc[ignition == 0, 'status'] = 'Idle'
+        df.loc[(ignition == 1) & (speed == 0), 'status'] = 'Idle'
+        df.loc[(ignition == 1) & (speed > 0), 'status'] = 'Moving'
         df.loc[(hours_ago >= 6) & (ignition == 0), 'status'] = 'Stopped'
         df.loc[hours_ago.isna(), 'status'] = 'Unknown'
 
@@ -2022,6 +2027,7 @@ def get_night_driving_live_data():
             FROM fvts_vehicles
             WHERE recorded_at >= DATE_TRUNC('month', CURRENT_DATE)
                 AND speed > 0
+                AND ignition = 1
                 AND (
                     EXTRACT(HOUR FROM date_time AT TIME ZONE 'Asia/Kolkata') >= 22
                     OR EXTRACT(HOUR FROM date_time AT TIME ZONE 'Asia/Kolkata') < 5
@@ -2173,6 +2179,7 @@ def get_idle_time_data():
                 FROM fvts_vehicles
                 WHERE recorded_at >= NOW() - INTERVAL '30 days'
                     AND speed > 0
+                    AND ignition = 1
                 GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
             )
             SELECT
@@ -4472,8 +4479,8 @@ def map_fragment(df):
     show_map(df)
     st.markdown("""
     **Legend:**
-    - 🟢 Green: Moving (Ignition ON, Speed >= 0)
-    - 🟠 Orange: Idle (Ignition OFF, Speed = 0)
+    - 🟢 Green: Moving (Ignition ON AND Speed > 0)
+    - 🟠 Orange: Idle (Ignition OFF OR Speed = 0)
     - 🔴 Red: Stopped (No update for 6+ hours AND Ignition OFF)
     """)
 
