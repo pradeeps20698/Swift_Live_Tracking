@@ -393,7 +393,7 @@ def load_vehicle_data():
         df.loc[hours_ago.isna(), 'status'] = 'Unknown'
 
         # Calculate ACTUAL idle time (vectorized)
-        is_idle = (df['status'] == 'Idle') & (speed == 0)
+        is_idle = (df['status'] == 'Idle')
         has_moving = is_idle & df['last_moving_time'].notna()
         idle_secs = (now - df['last_moving_time']).dt.total_seconds()
         idle_hours = (idle_secs / 3600).clip(lower=0)
@@ -3414,7 +3414,7 @@ def show_driver_at_home(df):
 
         # Filter for stationary/idle vehicles with drivers assigned
         vehicle_driver_df = merged_vehicle_df[
-            (merged_vehicle_df['speed'].fillna(0) <= 5) &
+            (merged_vehicle_df['status'].isin(['Idle', 'Stopped'])) &
             (merged_vehicle_df['driver_code'].notna()) &
             (merged_vehicle_df['driver_code'] != '') &
             (merged_vehicle_df['driver_code'] != '-')
@@ -3448,7 +3448,7 @@ def show_driver_at_home(df):
             # Show all stationary vehicles with drivers for reference
             st.markdown("---")
             st.subheader("📋 Stationary Vehicles with Drivers")
-            st.info(f"Showing {len(merged_df)} stationary vehicles (speed <= 5)")
+            st.info(f"Showing {len(merged_df)} stationary vehicles (Idle/Stopped)")
 
             display_cols = ['vehicle_no', 'driver_name', 'driver_code', 'driver_phone_no', 'location', 'party']
             available_cols = [c for c in display_cols if c in merged_df.columns]
@@ -3533,7 +3533,7 @@ def show_driver_at_home(df):
         <b style="color: #ff9800;">Detection Logic:</b><br>
         <span style="color: #ccc; font-size: 13px;">
         • Compares vehicle's current GPS location with driver's registered home address<br>
-        • Only checks stationary vehicles (speed = 0)<br>
+        • Only checks stationary vehicles (Idle/Stopped status)<br>
         • Match is based on location keywords (city, district, area names)
         </span>
         </div>
@@ -3812,13 +3812,11 @@ def show_long_halted_report():
         else:
             live_df['idle_hours'] = None
 
-        # Filter for idle time > 6 hours AND currently stopped (not moving)
-        # Vehicle must be stopped (speed <= 5 AND status not "Moving")
+        # Filter for idle time > 6 hours AND not moving (Idle or Stopped status)
         halted_vehicles = live_df[
             (live_df['idle_hours'].notna()) &
             (live_df['idle_hours'] > 6) &
-            (live_df['speed'].fillna(0) <= 5) &  # Speed check
-            (~live_df['status'].str.contains('Moving', case=False, na=False))  # Exclude Moving status
+            (live_df['status'].isin(['Idle', 'Stopped']))
         ].copy()
 
         st.caption(f"Found {len(halted_vehicles)} vehicles with Idle Time > 6 hours (currently stopped)")
