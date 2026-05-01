@@ -3852,6 +3852,20 @@ def show_long_halted_report():
         # Get idle time data
         idle_df = get_idle_time_data()
 
+        # Get fleet manager data from swift_vehicles table
+        fleet_mgr_df = pd.DataFrame()
+        try:
+            fm_conn = get_database_connection()
+            fm_query = "SELECT registration_no, fleet_manager FROM swift_vehicles WHERE fleet_manager IS NOT NULL AND fleet_manager != ''"
+            fleet_mgr_df = pd.read_sql_query(fm_query, fm_conn)
+            fm_conn.close()
+            fleet_mgr_df['normalized_vehicle_no'] = fleet_mgr_df['registration_no'].apply(
+                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
+            )
+            fleet_mgr_df = fleet_mgr_df[['normalized_vehicle_no', 'fleet_manager']].drop_duplicates(subset='normalized_vehicle_no')
+        except Exception:
+            fleet_mgr_df = pd.DataFrame(columns=['normalized_vehicle_no', 'fleet_manager'])
+
         # Normalize vehicle_no in live_df for joining
         live_df['normalized_vehicle_no'] = live_df['vehicle_no'].apply(
             lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
@@ -3896,7 +3910,9 @@ def show_long_halted_report():
             'loading_date': 'ld_loading_date',
             'driver_name': 'ld_driver_name',
             'driver_code': 'ld_driver_code',
-            'driver_phone_no': 'ld_driver_phone_no'
+            'driver_phone_no': 'ld_driver_phone_no',
+            'gps_today_km': 'ld_gps_today_km',
+            'gps_yesterday_km': 'ld_gps_yesterday_km'
         }
 
         # Only rename columns that exist
@@ -3926,6 +3942,13 @@ def show_long_halted_report():
             st.success("✅ No long halted vehicles with Early/Delay trip status!")
             return
 
+        # Merge fleet manager data
+        if len(fleet_mgr_df) > 0:
+            filtered_df = filtered_df.merge(fleet_mgr_df, on='normalized_vehicle_no', how='left')
+        if 'fleet_manager' not in filtered_df.columns:
+            filtered_df['fleet_manager'] = '-'
+        filtered_df['fleet_manager'] = filtered_df['fleet_manager'].fillna('-')
+
         # Map load details columns back to display names
         filtered_df['trip_status'] = filtered_df.get('ld_trip_status', pd.Series(['-'] * len(filtered_df))).fillna('-')
         filtered_df['current_trip_status'] = filtered_df.get('ld_current_trip_status', pd.Series(['-'] * len(filtered_df))).fillna('-')
@@ -3936,6 +3959,16 @@ def show_long_halted_report():
         filtered_df['driver_name'] = filtered_df.get('ld_driver_name', pd.Series(['-'] * len(filtered_df))).fillna('-')
         filtered_df['driver_code'] = filtered_df.get('ld_driver_code', pd.Series(['-'] * len(filtered_df))).fillna('-')
         filtered_df['driver_phone_no'] = filtered_df.get('ld_driver_phone_no', pd.Series(['-'] * len(filtered_df))).fillna('-')
+
+        # Format GPS KM columns
+        filtered_df['gps_today_km'] = filtered_df.get('ld_gps_today_km', pd.Series([0] * len(filtered_df))).fillna(0)
+        filtered_df['gps_today_km_fmt'] = filtered_df['gps_today_km'].apply(
+            lambda x: f"{float(x):.2f}" if pd.notna(x) and float(x) > 0 else '0'
+        )
+        filtered_df['gps_yesterday_km'] = filtered_df.get('ld_gps_yesterday_km', pd.Series([0] * len(filtered_df))).fillna(0)
+        filtered_df['gps_yesterday_km_fmt'] = filtered_df['gps_yesterday_km'].apply(
+            lambda x: f"{float(x):.2f}" if pd.notna(x) and float(x) > 0 else '0'
+        )
 
         # Ensure status and location columns exist from live data
         if 'status' not in filtered_df.columns:
@@ -3986,17 +4019,23 @@ def show_long_halted_report():
         display_df = filtered_df[[
             'vehicle_no', 'status', 'idle_time_fmt', 'location', 'gps_status',
             'trip_status', 'current_trip_status', 'route', 'onward_route',
-            'party', 'loading_date_fmt', 'driver', 'driver_phone_no'
+            'party', 'loading_date_fmt', 'fleet_manager', 'driver', 'driver_phone_no',
+            'gps_today_km_fmt', 'gps_yesterday_km_fmt'
         ]].copy()
 
         display_df.columns = [
             'Vehicle No', 'Status', 'Idle Time', 'Live Location', 'GPS Status',
             'Trip Status', 'Current Trip Status', 'Route', 'Onward Route',
-            'Party', 'Loading Date', 'Driver', 'Driver Phone'
+            'Party', 'Loading Date', 'Fleet Manager', 'Driver', 'Driver Phone',
+            'GPS Today KM', 'GPS Yesterday KM'
         ]
 
         # Fill NaN values
         display_df = display_df.fillna('-')
+
+        # Reset index to sequential 1-based serial numbers
+        display_df = display_df.reset_index(drop=True)
+        display_df.index = display_df.index + 1
 
         # Show count
         st.warning(f"⚠️ **{len(display_df)} vehicle(s) halted for more than 6 hours (Early/Delay trips)**")
