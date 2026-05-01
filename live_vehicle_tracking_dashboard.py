@@ -3393,7 +3393,7 @@ def show_driver_at_home(df):
         # Merge load_df with main df to get speed, location, and date_time
         # Main df has: speed, location, date_time columns
         # load_df has: driver_name, driver_code, driver_phone_no
-        merge_cols = ['vehicle_no', 'speed', 'location']
+        merge_cols = ['vehicle_no', 'speed', 'location', 'status']
         if 'date_time' in df.columns:
             merge_cols.append('date_time')
         merged_vehicle_df = load_df.merge(
