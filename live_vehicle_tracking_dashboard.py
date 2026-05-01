@@ -329,7 +329,7 @@ def load_vehicle_data():
                     UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
                     MAX(date_time) AS last_moving_time
                 FROM fvts_vehicles
-                WHERE recorded_at >= NOW() - INTERVAL '12 days'
+                WHERE recorded_at >= NOW() - INTERVAL '30 days'
                   AND speed > 0
                 GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
             )
@@ -2171,7 +2171,7 @@ def get_idle_time_data():
                     UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
                     MAX(date_time) as last_moving_time
                 FROM fvts_vehicles
-                WHERE recorded_at >= NOW() - INTERVAL '12 days'
+                WHERE recorded_at >= NOW() - INTERVAL '30 days'
                     AND speed > 0
                 GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
             )
