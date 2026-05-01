@@ -1,5 +1,6 @@
 import streamlit as st
 import psycopg2
+import psycopg2.pool
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
@@ -232,17 +233,12 @@ def validate_secrets():
             missing.append(key)
     return missing
 
-def get_database_connection():
-    """Create database connection using Streamlit secrets or environment variables"""
-    # Validate secrets before attempting connection
-    missing_secrets = validate_secrets()
-    if missing_secrets:
-        raise ValueError(
-            f"Missing database configuration: {', '.join(missing_secrets)}. "
-            f"Please configure these in Streamlit Cloud Secrets or local .env file."
-        )
-
-    return psycopg2.connect(
+@st.cache_resource(show_spinner=False)
+def _get_connection_pool():
+    """Create a shared connection pool (cached per Streamlit session)"""
+    return psycopg2.pool.ThreadedConnectionPool(
+        minconn=2,
+        maxconn=10,
         host=get_secret("Host"),
         user=get_secret("UserName"),
         password=get_secret("Password"),
@@ -255,6 +251,25 @@ def get_database_connection():
         keepalives_count=3
     )
 
+def get_database_connection():
+    """Get a connection from the pool"""
+    missing_secrets = validate_secrets()
+    if missing_secrets:
+        raise ValueError(
+            f"Missing database configuration: {', '.join(missing_secrets)}. "
+            f"Please configure these in Streamlit Cloud Secrets or local .env file."
+        )
+
+    pool = _get_connection_pool()
+    conn = pool.getconn()
+    # Ensure connection is alive
+    try:
+        conn.cursor().execute("SELECT 1")
+    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+        pool.putconn(conn, close=True)
+        conn = pool.getconn()
+    return conn
+
 # NOTE: Materialized views removed - all queries now use live data with recorded_at index
 def refresh_all_materialized_views():
     """No longer refreshes MVs - all queries now use live data"""
@@ -266,9 +281,7 @@ def load_owner_mapping():
     try:
         excel_path = os.path.join(os.path.dirname(__file__), 'party name map.xlsx')
         owner_df = pd.read_excel(excel_path)
-        owner_df['normalized_vehicle_no'] = owner_df['RegistrationNo'].apply(
-            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-        )
+        owner_df['normalized_vehicle_no'] = owner_df['RegistrationNo'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
         owner_df['owner_name'] = owner_df['PartyName'].apply(
             lambda x: 'Own Vehicle' if x in ['Swift Road Link Pvt. Ltd.', 'Nishant Saini Associates'] else x
         )
@@ -276,7 +289,7 @@ def load_owner_mapping():
     except Exception as e:
         return pd.DataFrame(columns=['normalized_vehicle_no', 'owner_name'])
 
-@st.cache_data(ttl=120, show_spinner=False)  # Cache for 2 minutes - matches database refresh rate
+@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes - matches database refresh rate
 def load_vehicle_data():
     """Load latest vehicle tracking data using ROW_NUMBER for live data.
     - Uses latest recorded_at for date range filter (has index, fast)
@@ -345,9 +358,7 @@ def load_vehicle_data():
 
         # Filter out excluded vehicles
         if EXCLUDED_VEHICLES:
-            df['normalized_vehicle'] = df['vehicle_no'].apply(
-                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-            )
+            df['normalized_vehicle'] = df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
             df = df[~df['normalized_vehicle'].isin(EXCLUDED_VEHICLES)]
             df = df.drop(columns=['normalized_vehicle'])
 
@@ -359,78 +370,51 @@ def load_vehicle_data():
         if 'last_moving_time' in df.columns:
             df['last_moving_time'] = pd.to_datetime(df['last_moving_time'], errors='coerce')
 
-        # Calculate time since last update
+        # Calculate time since last update (vectorized)
         now = datetime.now()
-        df['minutes_ago'] = df['date_time'].apply(
-            lambda x: int((now - x).total_seconds() / 60) if pd.notna(x) else None
-        )
+        time_diff = now - df['date_time']
+        total_secs = time_diff.dt.total_seconds()
+        df['minutes_ago'] = pd.array((total_secs / 60).round(0), dtype='Int64')
+        df['hours_ago'] = total_secs / 3600
 
-        df['hours_ago'] = df['date_time'].apply(
-            lambda x: (now - x).total_seconds() / 3600 if pd.notna(x) else None
-        )
+        # Determine status (vectorized)
+        hours_ago = df['hours_ago']
+        speed = df['speed'].fillna(0)
+        ignition = df['ignition'].fillna(0)
+        df['status'] = 'Unknown'
+        df.loc[speed == 0, 'status'] = 'Idle'
+        df.loc[speed > 0, 'status'] = 'Moving'
+        df.loc[(hours_ago >= 6) & (ignition == 0), 'status'] = 'Stopped'
+        df.loc[hours_ago.isna(), 'status'] = 'Unknown'
 
-        # Determine status with updated logic
-        def get_status(row):
-            if pd.isna(row['hours_ago']):
-                return 'Unknown'
-            # Stopped: Last update not received for 6 hours AND ignition is OFF
-            elif row['hours_ago'] >= 6 and row['ignition'] == 0:
-                return 'Stopped'
-            # Moving: Speed > 0 (regardless of ignition status)
-            elif row['speed'] > 0:
-                return 'Moving'
-            # Idle: Speed == 0 (ignition can be ON or OFF)
-            elif row['speed'] == 0:
-                return 'Idle'
-            else:
-                return 'Unknown'
+        # Calculate ACTUAL idle time (vectorized)
+        is_idle = (df['status'] == 'Idle') & (speed == 0)
+        has_moving = is_idle & df['last_moving_time'].notna()
+        idle_secs = (now - df['last_moving_time']).dt.total_seconds()
+        idle_hours = (idle_secs / 3600).clip(lower=0)
 
-        df['status'] = df.apply(get_status, axis=1)
+        days = (idle_hours // 24).fillna(0).astype(int)
+        rem_hours = (idle_hours % 24).fillna(0).astype(int)
+        hours_only = idle_hours.fillna(0).astype(int)
+        minutes_only = ((idle_hours % 1) * 60).fillna(0).astype(int)
 
-        # Calculate ACTUAL idle time (time since vehicle was last moving with speed > 0)
-        def calculate_idle_time(row):
-            if row['status'] != 'Idle':
-                return None
+        df['idle_time'] = None
+        mask_24plus = has_moving & (idle_hours >= 24)
+        mask_under24 = has_moving & (idle_hours < 24)
+        if mask_24plus.any():
+            df.loc[mask_24plus, 'idle_time'] = days[mask_24plus].astype(str) + 'd ' + rem_hours[mask_24plus].astype(str) + 'h'
+        if mask_under24.any():
+            df.loc[mask_under24, 'idle_time'] = hours_only[mask_under24].astype(str) + 'h ' + minutes_only[mask_under24].astype(str) + 'm'
+        df.loc[is_idle & df['last_moving_time'].isna(), 'idle_time'] = '>12 days'
 
-            # If vehicle is currently moving, no idle time
-            if row['speed'] > 0:
-                return None
-
-            # If we have last_moving_time, calculate actual idle duration
-            if pd.notna(row.get('last_moving_time')):
-                idle_hours = (now - row['last_moving_time']).total_seconds() / 3600
-                if idle_hours < 0:
-                    idle_hours = 0
-
-                # Format based on duration
-                if idle_hours >= 24:
-                    # Show in days and hours if >= 24 hours
-                    days = int(idle_hours // 24)
-                    remaining_hours = int(idle_hours % 24)
-                    return f"{days}d {remaining_hours}h"
-                else:
-                    # Show in hours and minutes if < 24 hours
-                    hours = int(idle_hours)
-                    minutes = int((idle_hours % 1) * 60)
-                    return f"{hours}h {minutes}m"
-            else:
-                # No movement data in last 12 days, show as unknown
-                return ">12 days"
-
-        df['idle_time'] = df.apply(calculate_idle_time, axis=1)
-
-        # Add color coding for map
-        def get_color(status):
-            if status == 'Moving':
-                return [0, 255, 0, 160]  # Green
-            elif status == 'Idle':
-                return [255, 165, 0, 160]  # Orange
-            elif status == 'Stopped':
-                return [255, 0, 0, 160]  # Red
-            else:
-                return [128, 128, 128, 160]  # Gray
-
-        df['color'] = df['status'].apply(get_color)
+        # Add color coding for map (vectorized)
+        color_map = {
+            'Moving': [0, 255, 0, 160],
+            'Idle': [255, 165, 0, 160],
+            'Stopped': [255, 0, 0, 160],
+            'Unknown': [128, 128, 128, 160]
+        }
+        df['color'] = df['status'].map(color_map)
 
         # Fetch mileage based on current month's data from intangles table
         # Mileage = Current Month Distance / (Current Month Engine Hours × 6 liters/hour)
@@ -482,10 +466,8 @@ def load_vehicle_data():
 
             # Normalize vehicle numbers in both dataframes for matching
             if not fuel_df.empty:
-                # Create normalized vehicle_no in df
-                df['normalized_vehicle_no'] = df['vehicle_no'].apply(
-                    lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-                )
+                # Create normalized vehicle_no in df (vectorized)
+                df['normalized_vehicle_no'] = df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
                 # Merge on normalized vehicle numbers
                 fuel_df_merge = fuel_df[['normalized_plate', 'fuel_economy_kmpl', 'current_fuel']].copy()
                 fuel_df_merge.columns = ['normalized_vehicle_no', 'fuel_economy_kmpl', 'current_fuel']
@@ -535,9 +517,7 @@ def load_vehicle_data():
             trip_df = pd.read_sql_query(trip_query, connection)
 
             if len(trip_df) > 0:
-                df['normalized_vehicle_no'] = df['vehicle_no'].apply(
-                    lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-                )
+                df['normalized_vehicle_no'] = df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
                 df = df.merge(trip_df, on='normalized_vehicle_no', how='left')
                 df = df.drop(columns=['normalized_vehicle_no'])
             else:
@@ -558,15 +538,11 @@ def load_vehicle_data():
         # Add owner name from Excel file
         try:
             owner_df = load_owner_mapping()
-            df['normalized_vehicle_no'] = df['vehicle_no'].apply(
-                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-            )
+            df['normalized_vehicle_no'] = df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
             df = df.merge(owner_df, on='normalized_vehicle_no', how='left')
-            # Apply custom owner mappings
-            df['owner_name'] = df.apply(
-                lambda row: CUSTOM_OWNER_MAPPING.get(row['normalized_vehicle_no'], row['owner_name']),
-                axis=1
-            )
+            # Apply custom owner mappings (vectorized via map)
+            custom_mapped = df['normalized_vehicle_no'].map(CUSTOM_OWNER_MAPPING)
+            df['owner_name'] = custom_mapped.where(custom_mapped.notna(), df['owner_name'])
             df = df.drop(columns=['normalized_vehicle_no'], errors='ignore')
             df['owner_name'] = df['owner_name'].fillna('-')
         except Exception as e:
@@ -591,7 +567,7 @@ def load_vehicle_data():
     finally:
         if connection:
             try:
-                connection.close()
+                _get_connection_pool().putconn(connection)
             except:
                 pass
 
@@ -689,46 +665,35 @@ def show_map(df):
     # Add layer control to switch between views
     folium.LayerControl().add_to(m)
 
-    # Add markers for each vehicle
-    for idx, row in df.iterrows():
-        # Determine color based on status
-        if row['status'] == 'Moving':
-            color = 'green'
-            icon = 'play'
-        elif row['status'] == 'Idle':
-            color = 'orange'
-            icon = 'pause'
-        elif row['status'] == 'Stopped':
-            color = 'red'
-            icon = 'stop'
-        else:
-            color = 'gray'
-            icon = 'question'
+    # Add markers for each vehicle (using to_dict for speed)
+    status_config = {
+        'Moving': ('green', 'play'),
+        'Idle': ('orange', 'pause'),
+        'Stopped': ('red', 'stop'),
+    }
+    now_ts = datetime.now()
 
-        # Create popup content with trip info
+    for row in df.to_dict('records'):
+        color, icon = status_config.get(row['status'], ('gray', 'question'))
+
         # Show Speed for Moving, Idle Time for Idle, Stopped Time for Stopped
         if row['status'] == 'Moving':
             speed_or_time_label = "Speed"
             speed_or_time_value = f"{row['speed']} km/h"
         elif row['status'] == 'Idle':
             speed_or_time_label = "Idle Time"
-            speed_or_time_value = row.get('idle_time', '-') if pd.notna(row.get('idle_time')) else '-'
+            speed_or_time_value = row.get('idle_time', '-') or '-'
         elif row['status'] == 'Stopped':
             speed_or_time_label = "Stopped Time"
-            # Calculate stopped time from Last Update Time (date_time) to current time
-            if pd.notna(row.get('date_time')):
+            dt = row.get('date_time')
+            if pd.notna(dt):
                 try:
-                    last_update = pd.to_datetime(row['date_time'])
-                    stopped_seconds = (datetime.now() - last_update).total_seconds()
+                    stopped_seconds = (now_ts - pd.to_datetime(dt)).total_seconds()
                     stopped_hours = stopped_seconds / 3600
                     if stopped_hours >= 24:
-                        days = int(stopped_hours // 24)
-                        hours = int(stopped_hours % 24)
-                        speed_or_time_value = f"{days}d {hours}h"
+                        speed_or_time_value = f"{int(stopped_hours // 24)}d {int(stopped_hours % 24)}h"
                     else:
-                        hours = int(stopped_hours)
-                        minutes = int((stopped_seconds % 3600) / 60)
-                        speed_or_time_value = f"{hours}h {minutes}m"
+                        speed_or_time_value = f"{int(stopped_hours)}h {int((stopped_seconds % 3600) / 60)}m"
                 except:
                     speed_or_time_value = '-'
             else:
@@ -738,17 +703,18 @@ def show_map(df):
             speed_or_time_value = f"{row['speed']} km/h"
 
         # Get trip info with safe defaults
-        trip_status = row.get('trip_status', '-') if pd.notna(row.get('trip_status')) else '-'
-        route = row.get('route', '-') if pd.notna(row.get('route')) else '-'
-        party = row.get('party', '-') if pd.notna(row.get('party')) else '-'
-        loading_date = row.get('loading_date', '-')
+        trip_status = row.get('trip_status') or '-'
+        route = row.get('route') or '-'
+        party = row.get('party') or '-'
+        loading_date = row.get('loading_date')
         if pd.notna(loading_date) and loading_date != '-':
             loading_date = pd.to_datetime(loading_date).strftime('%d-%b-%Y') if hasattr(loading_date, 'strftime') or isinstance(loading_date, str) else str(loading_date)[:10]
         else:
             loading_date = '-'
-        driver_name = row.get('driver_name', '-') if pd.notna(row.get('driver_name')) else '-'
-        driver_phone = row.get('driver_phone_no', '-') if pd.notna(row.get('driver_phone_no')) else '-'
-        owner_name = row.get('owner_name', '-') if pd.notna(row.get('owner_name')) else '-'
+        driver_name = row.get('driver_name') or '-'
+        driver_phone = row.get('driver_phone_no') or '-'
+        owner_name = row.get('owner_name') or '-'
+        location = row.get('location') or '-'
 
         popup_html = f"""
         <div style="font-family: Arial; width: 280px;">
@@ -756,7 +722,7 @@ def show_map(df):
             <hr style="margin: 5px 0;">
             <p style="margin: 3px 0;"><b>Status:</b> <span style="color: {color};">{row['status']}</span></p>
             <p style="margin: 3px 0;"><b>{speed_or_time_label}:</b> {speed_or_time_value}</p>
-            <p style="margin: 3px 0;"><b>Location:</b> {row['location'] if pd.notna(row['location']) else '-'}</p>
+            <p style="margin: 3px 0;"><b>Location:</b> {location}</p>
             <hr style="margin: 5px 0; border-style: dashed;">
             <p style="margin: 3px 0;"><b>Trip Status:</b> {trip_status}</p>
             <p style="margin: 3px 0;"><b>Route:</b> {route}</p>
@@ -1003,40 +969,33 @@ def show_vehicle_list(df):
         html_table += f'<th>{col}</th>'
     html_table += '</tr></thead><tbody>'
 
-    # Add rows
-    for idx, row in display_df.iterrows():
+    # Add rows (using to_dict for speed)
+    status_class_map = {'Moving': 'moving', 'Idle': 'idle', 'Stopped': 'stopped'}
+    center_cols = {'Speed (km/h)', 'Odometer (km)', 'Mileage', 'Idle Time', 'Ignition', 'Status'}
+    rows_html = []
+    for row in display_df.to_dict('records'):
         status = row['Status']
-        status_class = ''
-        if status == 'Moving':
-            status_class = 'moving'
-        elif status == 'Idle':
-            status_class = 'idle'
-        elif status == 'Stopped':
-            status_class = 'stopped'
-
+        status_class = status_class_map.get(status, '')
         lat = row['Latitude']
         lon = row['Longitude']
 
-        html_table += f'<tr class="{status_class}">'
+        cells = []
         for col in visible_columns:
             val = row[col]
             if col == 'Vehicle No':
-                html_table += f'<td class="vehicle-no">{val}</td>'
+                cells.append(f'<td class="vehicle-no">{val}</td>')
             elif col == 'Live Location':
-                # Make location clickable with map popup
                 if pd.notna(lat) and pd.notna(lon) and lat != 0 and lon != 0:
                     vehicle_no = row['Vehicle No']
-                    html_table += f'''<td class="left">
-                        <a class="location-link" href="javascript:void(0)"
-                           onclick="openMapPopup({lat}, {lon}, '{vehicle_no}', '{val}')">{val}</a>
-                    </td>'''
+                    cells.append(f'<td class="left"><a class="location-link" href="javascript:void(0)" onclick="openMapPopup({lat}, {lon}, \'{vehicle_no}\', \'{val}\')">{val}</a></td>')
                 else:
-                    html_table += f'<td class="left">{val}</td>'
-            elif col in ['Speed (km/h)', 'Odometer (km)', 'Mileage', 'Idle Time', 'Ignition', 'Status']:
-                html_table += f'<td class="center">{val}</td>'
+                    cells.append(f'<td class="left">{val}</td>')
+            elif col in center_cols:
+                cells.append(f'<td class="center">{val}</td>')
             else:
-                html_table += f'<td class="left">{val}</td>'
-        html_table += '</tr>'
+                cells.append(f'<td class="left">{val}</td>')
+        rows_html.append(f'<tr class="{status_class}">{"".join(cells)}</tr>')
+    html_table += ''.join(rows_html)
 
     html_table += '''</tbody></table></div>
 
@@ -1280,9 +1239,7 @@ def load_vehicle_load_details():
 
         # Filter out excluded vehicles
         if EXCLUDED_VEHICLES:
-            df['normalized_vehicle'] = df['vehicle_no'].apply(
-                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-            )
+            df['normalized_vehicle'] = df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
             df = df[~df['normalized_vehicle'].isin(EXCLUDED_VEHICLES)]
             df = df.drop(columns=['normalized_vehicle'])
 
@@ -1296,18 +1253,14 @@ def load_vehicle_load_details():
             excel_path = os.path.join(os.path.dirname(__file__), 'party name map.xlsx')
             owner_df = pd.read_excel(excel_path)
             # Normalize RegistrationNo for matching
-            owner_df['normalized_vehicle_no'] = owner_df['RegistrationNo'].apply(
-                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-            )
+            owner_df['normalized_vehicle_no'] = owner_df['RegistrationNo'].fillna('').astype(str).str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
             # Apply owner name mapping logic
             owner_df['owner_name'] = owner_df['PartyName'].apply(
                 lambda x: 'Own Vehicle' if x in ['Swift Road Link Pvt. Ltd.', 'Nishant Saini Associates'] else x
             )
             owner_df = owner_df[['normalized_vehicle_no', 'owner_name']]
             # Normalize vehicle_no in df for matching
-            df['normalized_vehicle_no_temp'] = df['vehicle_no'].apply(
-                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-            )
+            df['normalized_vehicle_no_temp'] = df['vehicle_no'].fillna('').astype(str).str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
             df = df.merge(owner_df, left_on='normalized_vehicle_no_temp', right_on='normalized_vehicle_no', how='left')
             # Apply custom owner mappings
             df['owner_name'] = df.apply(
@@ -1377,11 +1330,10 @@ def load_vehicle_load_details():
 
         # Create a dictionary for quick lookup: {vehicle_no: {date: km}}
         km_lookup = {}
-        for _, row in daily_km_df.iterrows():
-            vno = row['vehicle_no']
+        for vno, km_date, daily_km in zip(daily_km_df['vehicle_no'], daily_km_df['km_date'], daily_km_df['daily_km']):
             if vno not in km_lookup:
                 km_lookup[vno] = {}
-            km_lookup[vno][row['km_date'].date()] = row['daily_km']
+            km_lookup[vno][km_date.date()] = daily_km
 
         # Create km_trend sparkline for each vehicle from loading_date to today
         today = datetime.now().date()
@@ -1450,39 +1402,21 @@ def load_vehicle_load_details():
         # Calculate Current Trip Status
         now = datetime.now()
 
-        def calculate_current_trip_status(row):
-            # If no loading date, return empty
-            if pd.isna(row.get('loading_date')):
-                return '-'
+        # Calculate Current Trip Status (vectorized)
+        loading_date = pd.to_datetime(df['loading_date'], errors='coerce')
+        unloading_date = pd.to_datetime(df.get('unloading_date'), errors='coerce') if 'unloading_date' in df.columns else pd.Series([pd.NaT] * len(df))
+        distance = pd.to_numeric(df.get('distance', 0), errors='coerce').fillna(0)
+        tt_days = distance / 400
+        tt_date = loading_date + pd.to_timedelta(tt_days, unit='D')
 
-            # Check if unloading_date exists and is in the past
-            if pd.notna(row.get('unloading_date')) and row['unloading_date'] < now:
-                return 'Trip End'
-
-            # Calculate Transit Time (TT) based on distance
-            distance = row.get('distance', 0) or 0
-            if distance <= 0:
-                return '-'
-
-            # TT = distance / 400 km per day
-            tt_days = distance / 400
-
-            # Calculate expected arrival date (TT date from loading_date)
-            loading_date = row['loading_date']
-            tt_date = loading_date + timedelta(days=tt_days)
-
-            # Compare current date with TT date
-            if now < tt_date:
-                return 'Early'
-            else:
-                return 'Delay'
-
-        df['current_trip_status'] = df.apply(calculate_current_trip_status, axis=1)
+        df['current_trip_status'] = '-'
+        df.loc[loading_date.notna() & (distance > 0) & (now < tt_date), 'current_trip_status'] = 'Early'
+        df.loc[loading_date.notna() & (distance > 0) & (now >= tt_date), 'current_trip_status'] = 'Delay'
+        df.loc[unloading_date.notna() & (unloading_date < now), 'current_trip_status'] = 'Trip End'
 
         # Calculate trip duration for completed trips
         if 'trip_start_date' in df.columns and 'trip_end_date' in df.columns:
-            df['trip_duration_hours'] = (df['trip_end_date'] - df['trip_start_date']).dt.total_seconds() / 3600
-            df['trip_duration_hours'] = df['trip_duration_hours'].apply(lambda x: round(x, 1) if pd.notna(x) else None)
+            df['trip_duration_hours'] = ((df['trip_end_date'] - df['trip_start_date']).dt.total_seconds() / 3600).round(1)
 
         return df
 
@@ -1492,7 +1426,7 @@ def load_vehicle_load_details():
     finally:
         if connection:
             try:
-                connection.close()
+                _get_connection_pool().putconn(connection)
             except:
                 pass
 
@@ -1792,39 +1726,36 @@ def show_load_details():
             html_table += f'<th>{col}</th>'
         html_table += '</tr></thead><tbody>'
 
-        # Add rows
-        for idx, row in display_df.iterrows():
-            html_table += '<tr>'
-            for col in display_df.columns:
+        # Add rows (using to_dict for speed)
+        status_cls_map = {'Early': 'early', 'Delay': 'delay', 'Trip End': 'trip-end'}
+        center_cols_ld = {'Trip Status', 'Loading Date', 'Driver Phone', 'GPS Today KM', 'GPS Yesterday KM', 'GPS Month KM', 'Days >350 KM'}
+        all_cols = list(display_df.columns)
+        rows_html_ld = []
+        for row in display_df.to_dict('records'):
+            cells = []
+            for col in all_cols:
                 val = row[col]
                 if col == 'Vehicle No':
-                    html_table += f'<td class="vehicle-no">{val}</td>'
+                    cells.append(f'<td class="vehicle-no">{val}</td>')
                 elif col == 'KM Trend (Loading to Today)':
-                    html_table += f'<td class="trend-cell">{val}</td>'
+                    cells.append(f'<td class="trend-cell">{val}</td>')
                 elif col == 'Current Trip Status':
-                    status_class = ''
-                    if val == 'Early':
-                        status_class = 'early'
-                    elif val == 'Delay':
-                        status_class = 'delay'
-                    elif val == 'Trip End':
-                        status_class = 'trip-end'
-                    html_table += f'<td class="center {status_class}">{val}</td>'
-                elif col == 'Route':
-                    html_table += f'<td class="route-cell">{val}</td>'
-                elif col == 'Onward Route':
-                    html_table += f'<td class="route-cell">{val}</td>'
+                    status_class = status_cls_map.get(val, '')
+                    cells.append(f'<td class="center {status_class}">{val}</td>')
+                elif col in ('Route', 'Onward Route'):
+                    cells.append(f'<td class="route-cell">{val}</td>')
                 elif col == 'Party':
-                    html_table += f'<td class="party-cell">{val}</td>'
+                    cells.append(f'<td class="party-cell">{val}</td>')
                 elif col == 'Driver':
-                    html_table += f'<td class="driver-cell">{val}</td>'
+                    cells.append(f'<td class="driver-cell">{val}</td>')
                 elif col == 'Owner Name':
-                    html_table += f'<td class="owner-cell">{val}</td>'
-                elif col in ['Trip Status', 'Loading Date', 'Driver Phone', 'GPS Today KM', 'GPS Yesterday KM', 'GPS Month KM', 'Days >350 KM']:
-                    html_table += f'<td class="center">{val}</td>'
+                    cells.append(f'<td class="owner-cell">{val}</td>')
+                elif col in center_cols_ld:
+                    cells.append(f'<td class="center">{val}</td>')
                 else:
-                    html_table += f'<td class="left">{val}</td>'
-            html_table += '</tr>'
+                    cells.append(f'<td class="left">{val}</td>')
+            rows_html_ld.append(f'<tr>{"".join(cells)}</tr>')
+        html_table += ''.join(rows_html_ld)
 
         html_table += '</tbody></table></div></body></html>'
 
@@ -1970,11 +1901,10 @@ def load_trip_km_by_days_data():
 
         # Create a dictionary for quick lookup: {vehicle_no: {date: km}}
         km_lookup = {}
-        for _, row in daily_km_df.iterrows():
-            vno = row['vehicle_no']
+        for vno, km_date, daily_km in zip(daily_km_df['vehicle_no'], daily_km_df['km_date'], daily_km_df['daily_km']):
             if vno not in km_lookup:
                 km_lookup[vno] = {}
-            km_lookup[vno][row['km_date'].date()] = row['daily_km']
+            km_lookup[vno][km_date.date()] = daily_km
 
         # Add columns for Loading, +1, +2, +3, +4, +5 days
         for day_offset in range(6):
@@ -1992,7 +1922,7 @@ def load_trip_km_by_days_data():
     finally:
         if connection:
             try:
-                connection.close()
+                _get_connection_pool().putconn(connection)
             except:
                 pass
 
@@ -2010,7 +1940,7 @@ def get_km_for_day(row, km_lookup, day_offset):
         return round(km_lookup[vehicle_no][target_date], 2)
     return 0
 
-@st.cache_data(ttl=60, show_spinner=False)  # Cache for 60 seconds
+@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
 def get_night_driving_live_data():
     """Cached function to get live night driving data"""
     connection = None
@@ -2106,11 +2036,11 @@ def get_night_driving_live_data():
     finally:
         if connection:
             try:
-                connection.close()
+                _get_connection_pool().putconn(connection)
             except:
                 pass
 
-@st.cache_data(ttl=60, show_spinner=False)  # Cache for 60 seconds
+@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
 def get_night_driving_summary_data():
     """Cached function to get last night's driving summary"""
     connection = None
@@ -2224,7 +2154,7 @@ def get_night_driving_summary_data():
     finally:
         if connection:
             try:
-                connection.close()
+                _get_connection_pool().putconn(connection)
             except:
                 pass
 
@@ -2258,7 +2188,7 @@ def get_idle_time_data():
     finally:
         if connection:
             try:
-                connection.close()
+                _get_connection_pool().putconn(connection)
             except:
                 pass
 
@@ -2437,7 +2367,7 @@ def show_status_summary(df):
                 <table class="alert-table">
                 <tr><th>Vehicle No</th><th>Driver (Code)</th><th>Phone</th><th>Speed</th><th>Location</th><th>Month Night Days</th><th>Owner Name</th></tr>
                 '''
-                for _, row in live_df.iterrows():
+                for row in live_df.to_dict('records'):
                     driver = f"{row['driver_name']} ({row['driver_code']})" if row['driver_name'] != '-' else '-'
                     alert_html += f'''<tr>
                         <td class="center"><b>{row['vehicle_no']}</b></td>
@@ -2610,9 +2540,7 @@ def show_status_summary(df):
 
         # Merge owner info
         owner_df = load_owner_mapping()
-        night_df['normalized_vehicle_no'] = night_df['vehicle_no'].apply(
-            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-        )
+        night_df['normalized_vehicle_no'] = night_df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
         night_df = night_df.merge(owner_df, on='normalized_vehicle_no', how='left')
         # Apply custom owner mappings
         night_df['owner_name'] = night_df.apply(
@@ -2721,22 +2649,27 @@ def show_status_summary(df):
             html_table += f'<th>{col}</th>'
         html_table += '</tr></thead><tbody>'
 
-        # Add rows
-        for idx, row in display_df.iterrows():
-            html_table += '<tr>'
-            for col in display_df.columns:
+        # Add rows (using to_dict for speed)
+        nd_cols = list(display_df.columns)
+        nd_center = {'Max Speed', 'First Seen', 'Last Seen', 'Duration', 'Night KM'}
+        nd_loc = {'Start Location', 'End Location'}
+        rows_html_nd = []
+        for row in display_df.to_dict('records'):
+            cells = []
+            for col in nd_cols:
                 val = row[col]
                 if col == 'Vehicle No':
-                    html_table += f'<td class="vehicle-no">{val}</td>'
-                elif col in ['Max Speed', 'First Seen', 'Last Seen', 'Duration', 'Night KM']:
-                    html_table += f'<td class="center">{val}</td>'
+                    cells.append(f'<td class="vehicle-no">{val}</td>')
+                elif col in nd_center:
+                    cells.append(f'<td class="center">{val}</td>')
                 elif col == 'Month Night Days':
-                    html_table += f'<td class="center" style="font-weight: bold; color: #ab47bc;">{int(val)}</td>'
-                elif col in ['Start Location', 'End Location']:
-                    html_table += f'<td class="left" style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{val}">{val}</td>'
+                    cells.append(f'<td class="center" style="font-weight: bold; color: #ab47bc;">{int(val)}</td>')
+                elif col in nd_loc:
+                    cells.append(f'<td class="left" style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{val}">{val}</td>')
                 else:
-                    html_table += f'<td class="left">{val}</td>'
-            html_table += '</tr>'
+                    cells.append(f'<td class="left">{val}</td>')
+            rows_html_nd.append(f'<tr>{"".join(cells)}</tr>')
+        html_table += ''.join(rows_html_nd)
 
         html_table += '</tbody></table></div></body></html>'
 
@@ -2757,11 +2690,11 @@ def show_status_summary(df):
     finally:
         if connection:
             try:
-                connection.close()
+                _get_connection_pool().putconn(connection)
             except:
                 pass
 
-@st.cache_data(ttl=60, show_spinner=False)  # Cache for 1 minute
+@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
 def get_overspeed_data():
     """Cached function to get overspeed data from database"""
     connection = None
@@ -2944,7 +2877,7 @@ def get_overspeed_data():
     finally:
         if connection:
             try:
-                connection.close()
+                _get_connection_pool().putconn(connection)
             except:
                 pass
 
@@ -2980,9 +2913,7 @@ def show_overspeed_alerts(df):
             # Merge load details for Trip Status, Route, Party, Loading Date
             load_df = load_vehicle_load_details()
             if len(load_df) > 0:
-                load_df['normalized_vehicle_no'] = load_df['vehicle_no'].apply(
-                    lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-                )
+                load_df['normalized_vehicle_no'] = load_df['vehicle_no'].fillna('').astype(str).str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
                 load_subset = load_df[['normalized_vehicle_no', 'trip_status', 'route', 'party', 'loading_date']].copy()
                 load_subset = load_subset.rename(columns={
                     'trip_status': 'ld_trip_status',
@@ -3017,7 +2948,7 @@ def show_overspeed_alerts(df):
             <table class="overspeed-alert-table">
             <tr><th>Vehicle No</th><th>Driver (Code)</th><th>Phone</th><th>Speed</th><th>Duration</th><th>Location</th><th>Trip Status</th><th>Route</th><th>Party</th><th>Loading Date</th><th>Month Overspeed Count</th><th>Month Overspeed Days</th><th>Owner Name</th></tr>
             '''
-            for _, row in live_overspeed_df.iterrows():
+            for row in live_overspeed_df.to_dict('records'):
                 # Format driver info
                 driver_name = row.get('driver_name', '-') or '-'
                 driver_code = row.get('driver_code', '-') or '-'
@@ -3069,9 +3000,7 @@ def show_overspeed_alerts(df):
 
         # Merge owner info for overspeed summary
         owner_df = load_owner_mapping()
-        overspeed_df['normalized_vehicle_no'] = overspeed_df['vehicle_no'].apply(
-            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-        )
+        overspeed_df['normalized_vehicle_no'] = overspeed_df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
         overspeed_df = overspeed_df.merge(owner_df, on='normalized_vehicle_no', how='left')
         # Apply custom owner mappings
         overspeed_df['owner_name'] = overspeed_df.apply(
@@ -3083,9 +3012,7 @@ def show_overspeed_alerts(df):
         # Merge load details for Trip Status, Route, Party, Loading Date
         load_df = load_vehicle_load_details()
         if len(load_df) > 0:
-            load_df['normalized_vehicle_no'] = load_df['vehicle_no'].apply(
-                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-            )
+            load_df['normalized_vehicle_no'] = load_df['vehicle_no'].fillna('').astype(str).str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
             load_subset = load_df[['normalized_vehicle_no', 'trip_status', 'route', 'party', 'loading_date']].copy()
             load_subset = load_subset.rename(columns={
                 'trip_status': 'ld_trip_status',
@@ -3204,24 +3131,30 @@ def show_overspeed_alerts(df):
             html_table += f'<th>{col}</th>'
         html_table += '</tr></thead><tbody>'
 
-        # Add rows
-        for idx, row in display_df.iterrows():
-            html_table += '<tr>'
-            for col in display_df.columns:
+        # Add rows (using to_dict for speed)
+        os_cols = list(display_df.columns)
+        os_speed_cols = {'Max Speed', 'Avg Speed'}
+        os_center_cols = {'First Overspeed', 'Last Overspeed'}
+        os_month_cols = {'Month Overspeed Count', 'Month Overspeed Days'}
+        rows_html_os = []
+        for row in display_df.to_dict('records'):
+            cells = []
+            for col in os_cols:
                 val = row[col]
                 if col == 'Vehicle No':
-                    html_table += f'<td class="vehicle-no">{val}</td>'
-                elif col in ['Max Speed', 'Avg Speed']:
-                    html_table += f'<td class="speed">{val} km/h</td>'
+                    cells.append(f'<td class="vehicle-no">{val}</td>')
+                elif col in os_speed_cols:
+                    cells.append(f'<td class="speed">{val} km/h</td>')
                 elif col == 'Overspeed Count':
-                    html_table += f'<td class="speed">{int(val)} times</td>'
-                elif col in ['First Overspeed', 'Last Overspeed']:
-                    html_table += f'<td class="center">{val}</td>'
-                elif col in ['Month Overspeed Count', 'Month Overspeed Days']:
-                    html_table += f'<td class="center" style="font-weight: bold; color: #ab47bc;">{int(val)}</td>'
+                    cells.append(f'<td class="speed">{int(val)} times</td>')
+                elif col in os_center_cols:
+                    cells.append(f'<td class="center">{val}</td>')
+                elif col in os_month_cols:
+                    cells.append(f'<td class="center" style="font-weight: bold; color: #ab47bc;">{int(val)}</td>')
                 else:
-                    html_table += f'<td class="left">{val}</td>'
-            html_table += '</tr>'
+                    cells.append(f'<td class="left">{val}</td>')
+            rows_html_os.append(f'<tr>{"".join(cells)}</tr>')
+        html_table += ''.join(rows_html_os)
 
         html_table += '</tbody></table></div></body></html>'
 
@@ -3466,9 +3399,7 @@ def show_driver_at_home(df):
         idle_df = get_idle_time_data()
 
         # Normalize vehicle_no in merged_vehicle_df for joining
-        merged_vehicle_df['normalized_vehicle_no'] = merged_vehicle_df['vehicle_no'].apply(
-            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-        )
+        merged_vehicle_df['normalized_vehicle_no'] = merged_vehicle_df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
         if len(idle_df) > 0:
             merged_vehicle_df = merged_vehicle_df.merge(idle_df, on='normalized_vehicle_no', how='left')
         else:
@@ -3498,7 +3429,7 @@ def show_driver_at_home(df):
 
         # Check which drivers are at home
         drivers_at_home = []
-        for _, row in merged_df.iterrows():
+        for row in merged_df.to_dict('records'):
             location = row.get('location', '')
             if pd.notna(row.get('present_address')) and pd.notna(location) and location:
                 if check_driver_at_home(location, row['present_address'], row.get('state'), row.get('city')):
@@ -3669,12 +3600,8 @@ def show_gps_offline_report():
             return
 
         # Normalize vehicle_no for matching
-        offline_vehicles['normalized_vehicle_no'] = offline_vehicles['vehicle_no'].apply(
-            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-        )
-        load_df['normalized_vehicle_no'] = load_df['vehicle_no'].apply(
-            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-        )
+        offline_vehicles['normalized_vehicle_no'] = offline_vehicles['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
+        load_df['normalized_vehicle_no'] = load_df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
 
         # Prepare load_df subset with renamed columns to avoid conflicts
         load_subset = load_df.copy()
@@ -3858,18 +3785,14 @@ def show_long_halted_report():
             fm_conn = get_database_connection()
             fm_query = "SELECT registration_no, fleet_manager FROM swift_vehicles WHERE fleet_manager IS NOT NULL AND fleet_manager != ''"
             fleet_mgr_df = pd.read_sql_query(fm_query, fm_conn)
-            fm_conn.close()
-            fleet_mgr_df['normalized_vehicle_no'] = fleet_mgr_df['registration_no'].apply(
-                lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-            )
+            _get_connection_pool().putconn(fm_conn)
+            fleet_mgr_df['normalized_vehicle_no'] = fleet_mgr_df['registration_no'].fillna('').astype(str).str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
             fleet_mgr_df = fleet_mgr_df[['normalized_vehicle_no', 'fleet_manager']].drop_duplicates(subset='normalized_vehicle_no')
         except Exception:
             fleet_mgr_df = pd.DataFrame(columns=['normalized_vehicle_no', 'fleet_manager'])
 
         # Normalize vehicle_no in live_df for joining
-        live_df['normalized_vehicle_no'] = live_df['vehicle_no'].apply(
-            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-        )
+        live_df['normalized_vehicle_no'] = live_df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
 
         # Merge idle time with live data
         if len(idle_df) > 0:
@@ -3893,9 +3816,7 @@ def show_long_halted_report():
             return
 
         # Normalize vehicle_no in load_df
-        load_df['normalized_vehicle_no'] = load_df['vehicle_no'].apply(
-            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-        )
+        load_df['normalized_vehicle_no'] = load_df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
 
         # Prepare load_df subset with renamed columns to avoid conflicts
         load_subset = load_df.copy()
@@ -4147,12 +4068,8 @@ def show_delay_report():
         st.caption(f"Found {len(delay_load_df)} vehicles (Trip Status: Loaded, Current Trip Status: Delay, within last 15 days)")
 
         # Normalize vehicle_no for matching
-        delay_load_df['normalized_vehicle_no'] = delay_load_df['vehicle_no'].apply(
-            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-        )
-        live_df['normalized_vehicle_no'] = live_df['vehicle_no'].apply(
-            lambda x: str(x).upper().replace(' ', '').replace('-', '') if pd.notna(x) else ''
-        )
+        delay_load_df['normalized_vehicle_no'] = delay_load_df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
+        live_df['normalized_vehicle_no'] = live_df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
 
         # Merge idle time with live data
         if len(idle_df) > 0:
@@ -4490,7 +4407,7 @@ def show_nearby_vehicles(df, search_lat, search_lon, radius):
 # Fragment Wrappers for Partial Page Refresh
 # ============================================
 
-@st.fragment(run_every=60)  # Refresh every 60 seconds
+@st.fragment(run_every=120)  # Refresh every 2 minutes
 def top_overspeed_alert_fragment():
     """Top overspeed alert badge with 60-second auto-refresh - synced with Overspeed tab"""
     # Read from session_state (set by overspeed tab) for perfect sync
@@ -4526,19 +4443,19 @@ def top_overspeed_alert_fragment():
         </div>
         """, unsafe_allow_html=True)
 
-@st.fragment(run_every=60)  # Refresh every 60 seconds
+@st.fragment(run_every=120)  # Refresh every 2 minutes - live alert
 def night_driving_fragment(df):
-    """Night Driving section with 60-second auto-refresh"""
+    """Night Driving section with 2-minute auto-refresh"""
     show_status_summary(df)
 
-@st.fragment(run_every=60)  # Refresh every 60 seconds
+@st.fragment(run_every=120)  # Refresh every 2 minutes - live alert
 def overspeed_fragment(df):
-    """Overspeed section with 60-second auto-refresh"""
+    """Overspeed section with 2-minute auto-refresh"""
     show_overspeed_alerts(df)
 
-@st.fragment(run_every=120)  # Refresh every 2 minutes
+@st.fragment(run_every=300)  # Refresh every 5 minutes
 def map_fragment(df):
-    """Map section with 2-minute auto-refresh"""
+    """Map section with 5-minute auto-refresh"""
     st.subheader("🗺️ Swift Live Vehicle Locations")
     show_map(df)
     st.markdown("""
@@ -4548,7 +4465,7 @@ def map_fragment(df):
     - 🔴 Red: Stopped (No update for 6+ hours AND Ignition OFF)
     """)
 
-@st.fragment(run_every=120)  # Refresh every 2 minutes
+@st.fragment(run_every=300)  # Refresh every 5 minutes
 def vehicle_list_fragment(df):
     """Vehicle list section with 2-minute auto-refresh"""
     show_vehicle_list(df)
@@ -4622,19 +4539,9 @@ def nearby_vehicles_fragment(df, search_lat, search_lon, search_radius, search_l
             popup=f'{search_radius} km radius'
         ).add_to(m)
 
-        for idx, row in nearby_df.iterrows():
-            if row['status'] == 'Moving':
-                color = 'green'
-                icon = 'play'
-            elif row['status'] == 'Idle':
-                color = 'orange'
-                icon = 'pause'
-            elif row['status'] == 'Stopped':
-                color = 'red'
-                icon = 'stop'
-            else:
-                color = 'gray'
-                icon = 'question'
+        nearby_status_config = {'Moving': ('green', 'play'), 'Idle': ('orange', 'pause'), 'Stopped': ('red', 'stop')}
+        for row in nearby_df.to_dict('records'):
+            color, icon = nearby_status_config.get(row['status'], ('gray', 'question'))
 
             popup_html = f"""
             <div style="font-family: Arial; width: 250px;">
@@ -4663,12 +4570,15 @@ def main():
     import os
     import base64
 
-    # Load and encode logo
-    logo_html = ""
-    if os.path.exists("logo1.png"):
-        with open("logo1.png", "rb") as f:
-            logo_data = base64.b64encode(f.read()).decode()
-            logo_html = f'<img src="data:image/png;base64,{logo_data}" style="height: 50px; vertical-align: middle; margin-right: 15px;">'
+    # Load and encode logo (cached)
+    @st.cache_data(show_spinner=False)
+    def get_logo_html():
+        if os.path.exists("logo1.png"):
+            with open("logo1.png", "rb") as f:
+                logo_data = base64.b64encode(f.read()).decode()
+                return f'<img src="data:image/png;base64,{logo_data}" style="height: 50px; vertical-align: middle; margin-right: 15px;">'
+        return ""
+    logo_html = get_logo_html()
 
     # Title with logo
     st.markdown(f"""
