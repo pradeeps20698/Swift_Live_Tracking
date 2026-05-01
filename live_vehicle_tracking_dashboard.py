@@ -3755,6 +3755,20 @@ def show_gps_offline_report():
         st.code(traceback.format_exc())
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_fleet_manager_data():
+    """Load fleet manager data from swift_vehicles table (cached)"""
+    try:
+        fm_conn = get_database_connection()
+        fm_query = "SELECT registration_no, fleet_manager FROM swift_vehicles WHERE fleet_manager IS NOT NULL AND fleet_manager != ''"
+        fleet_mgr_df = pd.read_sql_query(fm_query, fm_conn)
+        _get_connection_pool().putconn(fm_conn)
+        fleet_mgr_df['normalized_vehicle_no'] = fleet_mgr_df['registration_no'].fillna('').astype(str).str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
+        return fleet_mgr_df[['normalized_vehicle_no', 'fleet_manager']].drop_duplicates(subset='normalized_vehicle_no')
+    except Exception:
+        return pd.DataFrame(columns=['normalized_vehicle_no', 'fleet_manager'])
+
+
 def show_long_halted_report():
     """Show Long Halted report - vehicles with Idle Time > 6 hours and trip status Early/Delay"""
     import io
@@ -3779,17 +3793,8 @@ def show_long_halted_report():
         # Get idle time data
         idle_df = get_idle_time_data()
 
-        # Get fleet manager data from swift_vehicles table
-        fleet_mgr_df = pd.DataFrame()
-        try:
-            fm_conn = get_database_connection()
-            fm_query = "SELECT registration_no, fleet_manager FROM swift_vehicles WHERE fleet_manager IS NOT NULL AND fleet_manager != ''"
-            fleet_mgr_df = pd.read_sql_query(fm_query, fm_conn)
-            _get_connection_pool().putconn(fm_conn)
-            fleet_mgr_df['normalized_vehicle_no'] = fleet_mgr_df['registration_no'].fillna('').astype(str).str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
-            fleet_mgr_df = fleet_mgr_df[['normalized_vehicle_no', 'fleet_manager']].drop_duplicates(subset='normalized_vehicle_no')
-        except Exception:
-            fleet_mgr_df = pd.DataFrame(columns=['normalized_vehicle_no', 'fleet_manager'])
+        # Get fleet manager data from swift_vehicles table (cached)
+        fleet_mgr_df = _load_fleet_manager_data()
 
         # Normalize vehicle_no in live_df for joining
         live_df['normalized_vehicle_no'] = live_df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
@@ -3881,15 +3886,11 @@ def show_long_halted_report():
         filtered_df['driver_code'] = filtered_df.get('ld_driver_code', pd.Series(['-'] * len(filtered_df))).fillna('-')
         filtered_df['driver_phone_no'] = filtered_df.get('ld_driver_phone_no', pd.Series(['-'] * len(filtered_df))).fillna('-')
 
-        # Format GPS KM columns
-        filtered_df['gps_today_km'] = filtered_df.get('ld_gps_today_km', pd.Series([0] * len(filtered_df))).fillna(0)
-        filtered_df['gps_today_km_fmt'] = filtered_df['gps_today_km'].apply(
-            lambda x: f"{float(x):.2f}" if pd.notna(x) and float(x) > 0 else '0'
-        )
-        filtered_df['gps_yesterday_km'] = filtered_df.get('ld_gps_yesterday_km', pd.Series([0] * len(filtered_df))).fillna(0)
-        filtered_df['gps_yesterday_km_fmt'] = filtered_df['gps_yesterday_km'].apply(
-            lambda x: f"{float(x):.2f}" if pd.notna(x) and float(x) > 0 else '0'
-        )
+        # Format GPS KM columns (vectorized)
+        filtered_df['gps_today_km'] = pd.to_numeric(filtered_df.get('ld_gps_today_km', 0), errors='coerce').fillna(0)
+        filtered_df['gps_today_km_fmt'] = filtered_df['gps_today_km'].map(lambda x: f"{x:.2f}" if x > 0 else '0')
+        filtered_df['gps_yesterday_km'] = pd.to_numeric(filtered_df.get('ld_gps_yesterday_km', 0), errors='coerce').fillna(0)
+        filtered_df['gps_yesterday_km_fmt'] = filtered_df['gps_yesterday_km'].map(lambda x: f"{x:.2f}" if x > 0 else '0')
 
         # Ensure status and location columns exist from live data
         if 'status' not in filtered_df.columns:
@@ -3897,25 +3898,27 @@ def show_long_halted_report():
         if 'location' not in filtered_df.columns:
             filtered_df['location'] = '-'
 
-        # Format driver column
-        filtered_df['driver'] = filtered_df.apply(
-            lambda row: f"{row['driver_name']} ({row['driver_code']})"
-            if pd.notna(row.get('driver_name')) and pd.notna(row.get('driver_code'))
-            and str(row['driver_name']) not in ['-', 'None', 'nan', '']
-            and str(row['driver_code']) not in ['-', 'None', 'nan', '']
-            else '-',
-            axis=1
-        )
+        # Format driver column (vectorized)
+        dn = filtered_df['driver_name'].astype(str)
+        dc = filtered_df['driver_code'].astype(str)
+        valid_driver = ~dn.isin(['-', 'None', 'nan', '']) & ~dc.isin(['-', 'None', 'nan', ''])
+        filtered_df['driver'] = '-'
+        filtered_df.loc[valid_driver, 'driver'] = dn[valid_driver] + ' (' + dc[valid_driver] + ')'
 
         # Format loading date
         filtered_df['loading_date_fmt'] = pd.to_datetime(filtered_df['loading_date'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M')
         filtered_df['loading_date_fmt'] = filtered_df['loading_date_fmt'].fillna('-')
 
-        # Format idle time
-        filtered_df['idle_time_fmt'] = filtered_df['idle_hours'].apply(
-            lambda x: f"{int(x // 24)}d {int(x % 24)}h" if pd.notna(x) and x >= 24
-            else (f"{int(x)}h {int((x % 1) * 60)}m" if pd.notna(x) else '-')
-        )
+        # Format idle time (vectorized)
+        ih = filtered_df['idle_hours']
+        ih_days = (ih // 24).fillna(0).astype(int)
+        ih_rem = (ih % 24).fillna(0).astype(int)
+        ih_hrs = ih.fillna(0).astype(int)
+        ih_mins = ((ih % 1) * 60).fillna(0).astype(int)
+        filtered_df['idle_time_fmt'] = '-'
+        mask_valid = ih.notna()
+        if mask_valid.any():
+            filtered_df.loc[mask_valid, 'idle_time_fmt'] = ih_hrs[mask_valid].astype(str) + 'h ' + ih_mins[mask_valid].astype(str) + 'm'
 
         # Calculate GPS Status (Offline if Last Update > 1 hour)
         ist = pytz.timezone('Asia/Kolkata')
@@ -3928,13 +3931,9 @@ def show_long_halted_report():
         else:
             filtered_df['date_time_ist'] = filtered_df['date_time'].dt.tz_convert(ist)
 
-        filtered_df['hours_since_update'] = filtered_df['date_time_ist'].apply(
-            lambda x: (current_time - x).total_seconds() / 3600 if pd.notna(x) else None
-        )
-
-        filtered_df['gps_status'] = filtered_df['hours_since_update'].apply(
-            lambda x: 'Offline' if pd.notna(x) and x > 1 else 'Online'
-        )
+        filtered_df['hours_since_update'] = (current_time - filtered_df['date_time_ist']).dt.total_seconds() / 3600
+        filtered_df['gps_status'] = 'Online'
+        filtered_df.loc[filtered_df['hours_since_update'] > 1, 'gps_status'] = 'Offline'
 
         # Create display dataframe
         display_df = filtered_df[[
@@ -3953,6 +3952,19 @@ def show_long_halted_report():
 
         # Fill NaN values
         display_df = display_df.fillna('-')
+
+        # Shorten Live Location to City, State only
+        def shorten_location(loc):
+            if not loc or loc == '-':
+                return loc
+            parts = [p.strip() for p in loc.replace(' - ', '-').split('-') if p.strip()]
+            # Remove 'India' if last part
+            if len(parts) > 1 and parts[-1].lower() == 'india':
+                parts = parts[:-1]
+            if len(parts) >= 2:
+                return f"{parts[-2]}, {parts[-1]}"
+            return parts[0] if parts else loc
+        display_df['Live Location'] = display_df['Live Location'].map(shorten_location)
 
         # Reset index to sequential 1-based serial numbers
         display_df = display_df.reset_index(drop=True)
