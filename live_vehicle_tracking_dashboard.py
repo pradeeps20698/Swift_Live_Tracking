@@ -777,7 +777,7 @@ def show_vehicle_list(df):
 
     # Format columns
     display_df['Ignition'] = display_df['Ignition'].apply(lambda x: 'ON' if x == 1 else 'OFF')
-    display_df['Odometer (km)'] = display_df['Odometer (km)'].apply(lambda x: f"{float(x):,.2f}" if pd.notna(x) else "N/A")
+    display_df['Odometer (km)'] = display_df['Odometer (km)'].apply(lambda x: f"{int(round(float(x))):,}" if pd.notna(x) else "N/A")
     display_df['Idle Time'] = display_df['Idle Time'].apply(lambda x: x if pd.notna(x) else '-')
     display_df['Speed (km/h)'] = display_df['Speed (km/h)'].apply(lambda x: f"{x}" if pd.notna(x) else "0")
     display_df['Location'] = display_df['Location'].apply(lambda x: x if pd.notna(x) and x else '-')
@@ -1540,17 +1540,17 @@ def show_load_details():
     # Format GPS KM columns
     if 'GPS Today KM' in display_df.columns and 'gps_today_km' in filtered_load_df.columns:
         display_df['GPS Today KM'] = filtered_load_df['gps_today_km'].apply(
-            lambda x: f"{round(x, 2)}" if pd.notna(x) and x != '' and x != 'None' and str(x) != '-' else '-'
+            lambda x: f"{int(round(x))}" if pd.notna(x) and x != '' and x != 'None' and str(x) != '-' else '-'
         )
 
     if 'GPS Yesterday KM' in display_df.columns and 'gps_yesterday_km' in filtered_load_df.columns:
         display_df['GPS Yesterday KM'] = filtered_load_df['gps_yesterday_km'].apply(
-            lambda x: f"{round(x, 2)}" if pd.notna(x) and x != '' and x != 'None' and str(x) != '-' else '-'
+            lambda x: f"{int(round(x))}" if pd.notna(x) and x != '' and x != 'None' and str(x) != '-' else '-'
         )
 
     if 'GPS Month KM' in display_df.columns and 'gps_month_km' in filtered_load_df.columns:
         display_df['GPS Month KM'] = filtered_load_df['gps_month_km'].apply(
-            lambda x: f"{round(x, 2)}" if pd.notna(x) and x != '' and x != 'None' and str(x) != '-' else '-'
+            lambda x: f"{int(round(x))}" if pd.notna(x) and x != '' and x != 'None' and str(x) != '-' else '-'
         )
 
     # Apply styling with dark mode support
@@ -2576,7 +2576,7 @@ def show_status_summary(df):
             return f"{h}h {m}m"
 
         display_df['Duration'] = display_df['duration_hours'].apply(format_duration)
-        display_df['Night KM'] = display_df['night_km'].apply(lambda x: f"{x:.1f}" if pd.notna(x) and x > 0 else '0.0')
+        display_df['Night KM'] = display_df['night_km'].apply(lambda x: f"{int(round(x))}" if pd.notna(x) and x > 0 else '0')
 
         # Select columns for display
         display_df = display_df[['vehicle_no', 'Driver', 'driver_phone', 'route', 'start_location', 'end_location', 'First Seen', 'Last Seen', 'Duration', 'Night KM', 'max_speed', 'month_night_days', 'owner_name']]
@@ -3875,8 +3875,8 @@ def show_long_halted_report():
         filtered_df['driver_phone_no'] = filtered_df.get('ld_driver_phone_no', pd.Series(['-'] * len(filtered_df))).fillna('-')
 
         # GPS KM
-        filtered_df['gps_today_km_fmt'] = pd.to_numeric(filtered_df.get('ld_gps_today_km', 0), errors='coerce').fillna(0).map(lambda x: f"{x:.2f}" if x > 0 else '0')
-        filtered_df['gps_yesterday_km_fmt'] = pd.to_numeric(filtered_df.get('ld_gps_yesterday_km', 0), errors='coerce').fillna(0).map(lambda x: f"{x:.2f}" if x > 0 else '0')
+        filtered_df['gps_today_km_fmt'] = pd.to_numeric(filtered_df.get('ld_gps_today_km', 0), errors='coerce').fillna(0).map(lambda x: f"{int(round(x))}" if x > 0 else '0')
+        filtered_df['gps_yesterday_km_fmt'] = pd.to_numeric(filtered_df.get('ld_gps_yesterday_km', 0), errors='coerce').fillna(0).map(lambda x: f"{int(round(x))}" if x > 0 else '0')
 
         # Driver
         dn = filtered_df['driver_name'].astype(str)
@@ -4349,7 +4349,7 @@ def show_nearby_vehicles(df, search_lat, search_lon, radius):
 
     # Format columns for display
     display_df['Ignition'] = display_df['ignition'].apply(lambda x: 'ON' if x == 1 else 'OFF')
-    display_df['Distance (km)'] = display_df['distance_km'].apply(lambda x: f"{x:.2f}")
+    display_df['Distance (km)'] = display_df['distance_km'].apply(lambda x: f"{int(round(x))}")
 
     # Select and rename columns
     display_cols = {
@@ -4526,7 +4526,7 @@ def nearby_vehicles_fragment(df, search_lat, search_lon, search_radius, search_l
             <div style="font-family: Arial; width: 250px;">
                 <h4 style="margin: 0; color: {color};">🚛 {row['vehicle_no']}</h4>
                 <hr style="margin: 5px 0;">
-                <p style="margin: 3px 0;"><b>Distance:</b> {row['distance_km']:.2f} km</p>
+                <p style="margin: 3px 0;"><b>Distance:</b> {int(round(row['distance_km']))} km</p>
                 <p style="margin: 3px 0;"><b>Status:</b> <span style="color: {color};">{row['status']}</span></p>
                 <p style="margin: 3px 0;"><b>Speed:</b> {row['speed']} km/h</p>
                 <p style="margin: 3px 0;"><b>Location:</b> {row['location'] if pd.notna(row['location']) else '-'}</p>
@@ -4536,7 +4536,7 @@ def nearby_vehicles_fragment(df, search_lat, search_lon, search_radius, search_l
             folium.Marker(
                 location=[float(row['latitude']), float(row['longitude'])],
                 popup=folium.Popup(popup_html, max_width=300),
-                tooltip=f"{row['vehicle_no']} - {row['distance_km']:.2f} km",
+                tooltip=f"{row['vehicle_no']} - {int(round(row['distance_km']))} km",
                 icon=folium.Icon(color=color, icon=icon, prefix='fa')
             ).add_to(m)
 
