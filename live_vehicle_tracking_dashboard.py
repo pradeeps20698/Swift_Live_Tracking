@@ -371,8 +371,9 @@ def load_vehicle_data():
         if 'last_moving_time' in df.columns:
             df['last_moving_time'] = pd.to_datetime(df['last_moving_time'], errors='coerce')
 
-        # Calculate time since last update (vectorized)
-        now = datetime.now()
+        # Calculate time since last update (vectorized) - use IST for consistent results
+        ist = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist).replace(tzinfo=None)
         time_diff = now - df['date_time']
         total_secs = time_diff.dt.total_seconds()
         df['minutes_ago'] = pd.array((total_secs / 60).round(0), dtype='Int64')
@@ -562,7 +563,8 @@ def load_vehicle_data():
 
 def compute_idle_time(df):
     """Compute idle_time dynamically from last_moving_time (called outside cache so it's always current)"""
-    now = datetime.now()
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist).replace(tzinfo=None)
     is_idle = df['status'].isin(['Idle', 'Stopped'])
     has_moving = is_idle & df['last_moving_time'].notna()
     idle_secs = (now - df['last_moving_time']).dt.total_seconds()
@@ -679,7 +681,8 @@ def show_map(df):
         'Idle': ('orange', 'pause'),
         'Stopped': ('red', 'stop'),
     }
-    now_ts = datetime.now()
+    ist = pytz.timezone('Asia/Kolkata')
+    now_ts = datetime.now(ist).replace(tzinfo=None)
 
     for row in df.to_dict('records'):
         color, icon = status_config.get(row['status'], ('gray', 'question'))
@@ -1344,7 +1347,8 @@ def load_vehicle_load_details():
             km_lookup[vno][km_date.date()] = daily_km
 
         # Create km_trend sparkline for each vehicle from loading_date to today
-        today = datetime.now().date()
+        ist = pytz.timezone('Asia/Kolkata')
+        today = datetime.now(ist).date()
 
         def get_km_trend(row):
             vehicle_no = row['vehicle_no']
@@ -1390,7 +1394,7 @@ def load_vehicle_load_details():
         df = df.sort_values('trend_total_km', ascending=False).reset_index(drop=True)
 
         # Calculate days with >350 km in current month
-        current_month_start = datetime.now().replace(day=1).date()
+        current_month_start = datetime.now(ist).replace(day=1).date()
 
         def count_days_above_350(vehicle_no):
             if vehicle_no not in km_lookup:
@@ -1408,7 +1412,7 @@ def load_vehicle_load_details():
             df['distance'] = pd.to_numeric(df['distance'], errors='coerce').fillna(0)
 
         # Calculate Current Trip Status
-        now = datetime.now()
+        now = datetime.now(ist).replace(tzinfo=None)
 
         # Calculate Current Trip Status (vectorized)
         loading_date = pd.to_datetime(df['loading_date'], errors='coerce')
@@ -4729,7 +4733,7 @@ def main():
     st.markdown("---")
     st.markdown(
         f"<p style='text-align: center; color: gray;'>Swift Live Tracking Dashboard | "
-        f"Data Source: FVTS_VEHICLES Database | Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Partial Refresh: Night Driving & Overspeed (60s) / Other Sections (10 min)</p>",
+        f"Data Source: FVTS_VEHICLES Database | Last Updated: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S')} IST | Partial Refresh: Night Driving & Overspeed (60s) / Other Sections (10 min)</p>",
         unsafe_allow_html=True
     )
 
