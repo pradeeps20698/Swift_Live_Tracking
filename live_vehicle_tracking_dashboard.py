@@ -392,22 +392,9 @@ def load_vehicle_data():
         df.loc[(hours_ago >= 6) & (ignition == 0), 'status'] = 'Stopped'
         df.loc[hours_ago.isna(), 'status'] = 'Unknown'
 
-        # Calculate ACTUAL idle time (vectorized) for Idle and Stopped vehicles
-        is_idle = (df['status'].isin(['Idle', 'Stopped']))
-        has_moving = is_idle & df['last_moving_time'].notna()
-        idle_secs = (now - df['last_moving_time']).dt.total_seconds()
-        idle_hours = (idle_secs / 3600).clip(lower=0)
-
-        hours_only = idle_hours.fillna(0).astype(int)
-        minutes_only = ((idle_hours % 1) * 60).fillna(0).astype(int)
-
+        # Store idle_time as None here - will be computed dynamically at display time
+        # using last_moving_time so it's always current (not frozen by cache)
         df['idle_time'] = None
-        if has_moving.any():
-            df.loc[has_moving, 'idle_time'] = hours_only[has_moving].astype(str) + 'h ' + minutes_only[has_moving].astype(str) + 'm'
-        # For vehicles with no movement in 90 days, show >2160h
-        no_moving_idle = is_idle & df['last_moving_time'].isna()
-        if no_moving_idle.any():
-            df.loc[no_moving_idle, 'idle_time'] = '>2160h'
 
         # Add color coding for map (vectorized)
         color_map = {
@@ -572,6 +559,25 @@ def load_vehicle_data():
                 _get_connection_pool().putconn(connection)
             except:
                 pass
+
+def compute_idle_time(df):
+    """Compute idle_time dynamically from last_moving_time (called outside cache so it's always current)"""
+    now = datetime.now()
+    is_idle = df['status'].isin(['Idle', 'Stopped'])
+    has_moving = is_idle & df['last_moving_time'].notna()
+    idle_secs = (now - df['last_moving_time']).dt.total_seconds()
+    idle_hours = (idle_secs / 3600).clip(lower=0)
+    hours_only = idle_hours.fillna(0).astype(int)
+    minutes_only = ((idle_hours % 1) * 60).fillna(0).astype(int)
+
+    df['idle_time'] = None
+    if has_moving.any():
+        df.loc[has_moving, 'idle_time'] = hours_only[has_moving].astype(str) + 'h ' + minutes_only[has_moving].astype(str) + 'm'
+    no_moving_idle = is_idle & df['last_moving_time'].isna()
+    if no_moving_idle.any():
+        df.loc[no_moving_idle, 'idle_time'] = '>2160h'
+    return df
+
 
 def show_overview_metrics(df):
     """Display overview metrics"""
@@ -3573,6 +3579,7 @@ def show_gps_offline_report():
         if live_df is None or len(live_df) == 0:
             st.warning("No vehicle data available")
             return
+        live_df = compute_idle_time(live_df)
 
         # Get load details data
         load_df = load_vehicle_load_details()
@@ -3787,6 +3794,7 @@ def show_long_halted_report():
         if live_df is None or len(live_df) == 0:
             st.warning("No vehicle data available")
             return
+        live_df = compute_idle_time(live_df)
 
         # Step 2: Filter Status = Idle/Stopped AND Idle Time > 6 hours
         live_df['normalized_vehicle_no'] = live_df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
@@ -4006,6 +4014,7 @@ def show_delay_report():
         if live_df is None or len(live_df) == 0:
             st.warning("No vehicle data available")
             return
+        live_df = compute_idle_time(live_df)
 
         # Get load details data
         load_df = load_vehicle_load_details()
@@ -4572,6 +4581,8 @@ def main():
     # Load data from cached materialized views (fast!)
     with st.spinner("Loading vehicle data..."):
         df = load_vehicle_data()
+        if len(df) > 0:
+            df = compute_idle_time(df)
 
     if len(df) == 0:
         st.error("No vehicle data available. Please check database connection and Streamlit secrets configuration.")
