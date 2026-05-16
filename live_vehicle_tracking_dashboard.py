@@ -330,8 +330,7 @@ def load_vehicle_data():
                     MAX(date_time) AS last_moving_time
                 FROM fvts_vehicles
                 WHERE recorded_at >= NOW() - INTERVAL '90 days'
-                  AND speed > 0
-                  AND ignition = 1
+                  AND (speed > 5 OR (speed > 0 AND ignition = 1))
                 GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
             )
             SELECT
@@ -380,9 +379,10 @@ def load_vehicle_data():
         df['hours_ago'] = total_secs / 3600
 
         # Determine status (vectorized)
-        # Moving = Ignition ON AND Speed > 0
-        # Idle = Ignition OFF (regardless of speed - GPS drift)
-        # Stopped = No update for 6+ hours AND Ignition OFF
+        # Moving = Speed > 5 (regardless of ignition - handles faulty ignition sensors)
+        #        OR Ignition ON AND Speed > 0
+        # Idle = Ignition OFF AND low/no speed (GPS drift threshold: <= 5 km/h)
+        # Stopped = No update for 6+ hours AND Ignition OFF AND low/no speed
         hours_ago = df['hours_ago']
         speed = df['speed'].fillna(0)
         ignition = df['ignition'].fillna(0)
@@ -390,7 +390,9 @@ def load_vehicle_data():
         df.loc[ignition == 0, 'status'] = 'Idle'
         df.loc[(ignition == 1) & (speed == 0), 'status'] = 'Idle'
         df.loc[(ignition == 1) & (speed > 0), 'status'] = 'Moving'
-        df.loc[(hours_ago >= 6) & (ignition == 0), 'status'] = 'Stopped'
+        # Speed > 5 km/h means vehicle is genuinely moving even if ignition reports OFF
+        df.loc[speed > 5, 'status'] = 'Moving'
+        df.loc[(hours_ago >= 6) & (ignition == 0) & (speed <= 5), 'status'] = 'Stopped'
         df.loc[hours_ago.isna(), 'status'] = 'Unknown'
 
         # Store idle_time as None here - will be computed dynamically at display time
@@ -2185,8 +2187,7 @@ def get_idle_time_data():
                     MAX(date_time) as last_moving_time
                 FROM fvts_vehicles
                 WHERE recorded_at >= NOW() - INTERVAL '90 days'
-                    AND speed > 0
-                    AND ignition = 1
+                    AND (speed > 5 OR (speed > 0 AND ignition = 1))
                 GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
             )
             SELECT
@@ -4452,9 +4453,9 @@ def map_fragment(df):
     show_map(df)
     st.markdown("""
     **Legend:**
-    - 🟢 Green: Moving (Ignition ON AND Speed > 0)
-    - 🟠 Orange: Idle (Ignition OFF OR Speed = 0)
-    - 🔴 Red: Stopped (No update for 6+ hours AND Ignition OFF)
+    - 🟢 Green: Moving (Speed > 5 km/h OR Ignition ON AND Speed > 0)
+    - 🟠 Orange: Idle (Ignition OFF AND Speed ≤ 5 km/h, OR Ignition ON AND Speed = 0)
+    - 🔴 Red: Stopped (No update for 6+ hours AND Ignition OFF AND Speed ≤ 5 km/h)
     """)
 
 @st.fragment(run_every=300)  # Refresh every 5 minutes
