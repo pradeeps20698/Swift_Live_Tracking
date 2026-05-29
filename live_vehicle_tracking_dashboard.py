@@ -3791,7 +3791,7 @@ def show_long_halted_report():
     from datetime import datetime, timedelta
 
     st.markdown("### 🛑 Long Halted Report")
-    st.info("Showing vehicles with Idle Time > 6 hours and Current Trip Status is Early or Delay")
+    st.info("Showing vehicles with Idle Time > 6 hours and Current Trip Status is Early or Delay (also includes vehicles with GPS Today KM ≤ 5 that are currently Idle)")
 
     try:
         # Step 1: Get Live Vehicle Details data (same as Live Vehicle Details tab)
@@ -3801,11 +3801,10 @@ def show_long_halted_report():
             return
         live_df = compute_idle_time(live_df)
 
-        # Step 2: Filter Status = Idle/Stopped AND Idle Time > 6 hours
+        # Step 2: Filter Status = Idle/Stopped
+        # Include all Idle vehicles initially (will apply GPS KM filter after merge)
         live_df['normalized_vehicle_no'] = live_df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
 
-        # Idle vehicles: must have idle_time > 6 hours
-        # Stopped vehicles: always include (no update 6+ hours by definition)
         idle_mask = (
             (live_df['status'] == 'Idle') &
             (live_df['idle_time'].notna()) &
@@ -3816,16 +3815,16 @@ def show_long_halted_report():
         idle_vehicles = live_df[idle_mask].copy()
         # Parse hours: "Xh Ym" or ">2160h"
         idle_vehicles['_idle_hrs'] = idle_vehicles['idle_time'].str.extract(r'(\d+)h', expand=False).astype(float)
-        idle_vehicles = idle_vehicles[idle_vehicles['_idle_hrs'] > 6]
 
         stopped_vehicles = live_df[stopped_mask].copy()
+        stopped_vehicles['_idle_hrs'] = float('inf')
 
         halted_vehicles = pd.concat([idle_vehicles, stopped_vehicles], ignore_index=True)
 
-        st.caption(f"Found {len(halted_vehicles)} vehicles with Idle Time > 6 hours (currently stopped)")
+        st.caption(f"Found {len(halted_vehicles)} idle/stopped vehicles being evaluated")
 
         if len(halted_vehicles) == 0:
-            st.success("✅ No vehicles halted for more than 6 hours!")
+            st.success("✅ No idle/stopped vehicles found!")
             return
 
         # Step 3: Get Load Details data and filter Current Trip Status = Early/Delay
@@ -3863,6 +3862,13 @@ def show_long_halted_report():
             on='normalized_vehicle_no',
             how='inner'
         )
+
+        # Apply combined filter: Idle Time > 6 hours OR GPS Today KM <= 5
+        # This catches vehicles that were halted long, briefly moved <=5 km, and halted again
+        filtered_df['_gps_today_km_val'] = pd.to_numeric(filtered_df.get('ld_gps_today_km', 0), errors='coerce').fillna(0)
+        filtered_df = filtered_df[
+            (filtered_df['_idle_hrs'] > 6) | (filtered_df['_gps_today_km_val'] <= 5)
+        ].copy()
 
         if len(filtered_df) == 0:
             st.success("✅ No long halted vehicles with Early/Delay trip status!")
@@ -3902,7 +3908,60 @@ def show_long_halted_report():
         filtered_df['loading_date_fmt'] = pd.to_datetime(filtered_df['loading_date'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M')
         filtered_df['loading_date_fmt'] = filtered_df['loading_date_fmt'].fillna('-')
 
-        # Idle time - directly from Live Vehicle Details
+        # Idle time - for vehicles with GPS Today KM <= 5 and idle < 6 hrs,
+        # find the previous halt start (last-to-last halt) from GPS history
+        # The current last_moving_time reflects today's brief <=5 km move, so we need
+        # the last significant moving time BEFORE that brief move
+        ist_tz = pytz.timezone('Asia/Kolkata')
+        now_ist = datetime.now(ist_tz).replace(tzinfo=None)
+        low_km_short_idle = (filtered_df['_gps_today_km_val'] <= 5) & (filtered_df['_idle_hrs'] <= 6)
+        if low_km_short_idle.any():
+            low_km_vnos = filtered_df.loc[low_km_short_idle, 'normalized_vehicle_no'].tolist()
+            try:
+                conn = get_database_connection()
+                placeholders = ','.join(['%s'] * len(low_km_vnos))
+                # Find last date each vehicle moved > 5 km, then get last moving time on/before that date
+                prev_halt_query = f"""
+                    WITH last_significant_day AS (
+                        SELECT
+                            UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
+                            MAX(date) as last_move_date
+                        FROM day_wise_gps_km
+                        WHERE UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) IN ({placeholders})
+                          AND total_km > 5
+                        GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
+                    )
+                    SELECT
+                        UPPER(REPLACE(REPLACE(fv.vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
+                        MAX(fv.date_time) as prev_last_moving_time
+                    FROM fvts_vehicles fv
+                    JOIN last_significant_day lsd
+                        ON UPPER(REPLACE(REPLACE(fv.vehicle_no, ' ', ''), '-', '')) = lsd.normalized_vehicle_no
+                    WHERE fv.date_time::date <= lsd.last_move_date
+                      AND (fv.speed > 5 OR (fv.speed > 0 AND fv.ignition = 1))
+                    GROUP BY UPPER(REPLACE(REPLACE(fv.vehicle_no, ' ', ''), '-', ''))
+                """
+                prev_halt_df = pd.read_sql_query(prev_halt_query, conn, params=low_km_vnos)
+                _get_connection_pool().putconn(conn)
+
+                if len(prev_halt_df) > 0:
+                    prev_halt_map = prev_halt_df.set_index('normalized_vehicle_no')['prev_last_moving_time']
+                    prev_halt_map = pd.to_datetime(prev_halt_map, errors='coerce')
+
+                    for idx in filtered_df[low_km_short_idle].index:
+                        vno = filtered_df.loc[idx, 'normalized_vehicle_no']
+                        if vno in prev_halt_map.index and pd.notna(prev_halt_map[vno]):
+                            prev_moving = prev_halt_map[vno]
+                            if prev_moving.tzinfo is not None:
+                                prev_moving = prev_moving.replace(tzinfo=None)
+                            halt_hrs = (now_ist - prev_moving).total_seconds() / 3600
+                            halt_hrs = max(halt_hrs, 0)
+                            hrs = int(halt_hrs)
+                            mins = int((halt_hrs % 1) * 60)
+                            filtered_df.loc[idx, 'idle_time'] = f"{hrs}h {mins}m"
+                            filtered_df.loc[idx, '_idle_hrs'] = halt_hrs
+            except Exception:
+                pass  # Fall back to current idle_time if query fails
         filtered_df['idle_time_fmt'] = filtered_df['idle_time'].fillna('-')
 
         # GPS Status
@@ -3951,7 +4010,7 @@ def show_long_halted_report():
         display_df.index = display_df.index + 1
 
         # Show count
-        st.warning(f"⚠️ **{len(display_df)} vehicle(s) halted for more than 6 hours (Early/Delay trips)**")
+        st.warning(f"⚠️ **{len(display_df)} vehicle(s) halted for more than 6 hours or moved ≤ 5 KM today (Early/Delay trips)**")
 
         # Download buttons
         col1, col2, col3 = st.columns([1, 1, 4])
@@ -3993,6 +4052,7 @@ def show_long_halted_report():
         <b style="color: #ff9800;">Report Criteria:</b><br>
         <span style="color: #ccc; font-size: 13px;">
         • Long Halted: Idle Time > 6 hours<br>
+        • Also includes: Vehicles currently Idle with GPS Today KM ≤ 5 (briefly moved but halted again)<br>
         • Only showing vehicles with Current Trip Status = Early or Delay<br>
         • Data from Load Details and Live Vehicle tracking
         </span>
