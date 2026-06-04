@@ -382,7 +382,7 @@ def load_vehicle_data():
         # Moving = Speed > 5 (regardless of ignition - handles faulty ignition sensors)
         #        OR Ignition ON AND Speed > 0
         # Idle = Ignition OFF AND low/no speed (GPS drift threshold: <= 5 km/h)
-        # Stopped = No update for 6+ hours AND Ignition OFF AND low/no speed
+        # Stopped = No update for 6+ hours (stale data, speed/ignition unreliable)
         hours_ago = df['hours_ago']
         speed = df['speed'].fillna(0)
         ignition = df['ignition'].fillna(0)
@@ -392,7 +392,8 @@ def load_vehicle_data():
         df.loc[(ignition == 1) & (speed > 0), 'status'] = 'Moving'
         # Speed > 5 km/h means vehicle is genuinely moving even if ignition reports OFF
         df.loc[speed > 5, 'status'] = 'Moving'
-        df.loc[(hours_ago >= 6) & (ignition == 0) & (speed <= 5), 'status'] = 'Stopped'
+        # No update for 6+ hours = Stopped (data is stale, speed/ignition values are outdated)
+        df.loc[hours_ago >= 6, 'status'] = 'Stopped'
         df.loc[hours_ago.isna(), 'status'] = 'Unknown'
 
         # Store idle_time as None here - will be computed dynamically at display time
@@ -4515,7 +4516,7 @@ def map_fragment(df):
     **Legend:**
     - 🟢 Green: Moving (Speed > 5 km/h OR Ignition ON AND Speed > 0)
     - 🟠 Orange: Idle (Ignition OFF AND Speed ≤ 5 km/h, OR Ignition ON AND Speed = 0)
-    - 🔴 Red: Stopped (No update for 6+ hours AND Ignition OFF AND Speed ≤ 5 km/h)
+    - 🔴 Red: Stopped (No update for 6+ hours)
     """)
 
 @st.fragment(run_every=300)  # Refresh every 5 minutes
