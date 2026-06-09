@@ -1142,29 +1142,60 @@ def load_vehicle_load_details():
     try:
         connection = get_database_connection()
 
-        # Optimized query using day_wise_gps_km table for KM data (very fast!)
+        # Calculate KM directly from fvts_vehicles odometer data
         query = """
-            WITH vehicle_today_km AS (
+            WITH daily_odometer AS (
                 SELECT
                     UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no,
-                    COALESCE(total_km, 0) as today_km_traveled
-                FROM day_wise_gps_km
-                WHERE date = CURRENT_DATE
+                    DATE(date_time) as km_date,
+                    MAX(odometer) as end_odometer,
+                    MIN(odometer) as start_odometer
+                FROM fvts_vehicles
+                WHERE vehicle_no IS NOT NULL
+                    AND odometer IS NOT NULL
+                    AND odometer > 0
+                    AND date_time >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 day'
+                GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')), DATE(date_time)
+            ),
+            daily_with_prev AS (
+                SELECT
+                    vehicle_no,
+                    km_date,
+                    end_odometer,
+                    start_odometer,
+                    LAG(end_odometer) OVER (PARTITION BY vehicle_no ORDER BY km_date) as prev_end_odometer
+                FROM daily_odometer
+            ),
+            daily_km AS (
+                SELECT
+                    vehicle_no,
+                    km_date,
+                    LEAST(
+                        CASE
+                            WHEN prev_end_odometer IS NOT NULL AND start_odometer >= prev_end_odometer THEN
+                                GREATEST(end_odometer - prev_end_odometer, 0)
+                            WHEN prev_end_odometer IS NULL THEN
+                                GREATEST(end_odometer - start_odometer, 0)
+                            ELSE
+                                GREATEST(end_odometer - start_odometer, 0)
+                        END,
+                        1500
+                    ) as daily_km
+                FROM daily_with_prev
+                WHERE end_odometer IS NOT NULL
+            ),
+            vehicle_today_km AS (
+                SELECT vehicle_no, COALESCE(daily_km, 0) as today_km_traveled
+                FROM daily_km WHERE km_date = CURRENT_DATE
             ),
             vehicle_yesterday_km AS (
-                SELECT
-                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no,
-                    COALESCE(total_km, 0) as yesterday_km_traveled
-                FROM day_wise_gps_km
-                WHERE date = CURRENT_DATE - INTERVAL '1 day'
+                SELECT vehicle_no, COALESCE(daily_km, 0) as yesterday_km_traveled
+                FROM daily_km WHERE km_date = CURRENT_DATE - INTERVAL '1 day'
             ),
             vehicle_month_km AS (
-                SELECT
-                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no,
-                    COALESCE(SUM(total_km), 0) as month_km_traveled
-                FROM day_wise_gps_km
-                WHERE date >= DATE_TRUNC('month', CURRENT_DATE)
-                GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
+                SELECT vehicle_no, COALESCE(SUM(daily_km), 0) as month_km_traveled
+                FROM daily_km WHERE km_date >= DATE_TRUNC('month', CURRENT_DATE)
+                GROUP BY vehicle_no
             ),
             -- Get all unique vehicles from live data (uses recorded_at index)
             all_vehicles AS (
@@ -1333,7 +1364,7 @@ def load_vehicle_load_details():
                         ELSE
                             GREATEST(end_odometer - start_odometer, 0)
                     END,
-                    1000
+                    1500
                 ) as daily_km
             FROM daily_with_prev
             WHERE end_odometer IS NOT NULL
@@ -1900,15 +1931,48 @@ def load_trip_km_by_days_data():
         if 'loading_date' in df.columns:
             df['loading_date'] = pd.to_datetime(df['loading_date'], errors='coerce')
 
-        # Get daily GPS KM from pre-calculated day_wise_gps_km table (fast!)
+        # Calculate daily GPS KM directly from fvts_vehicles odometer
         daily_km_query = """
+            WITH daily_odometer AS (
+                SELECT
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no,
+                    DATE(date_time) as km_date,
+                    MAX(odometer) as end_odometer,
+                    MIN(odometer) as start_odometer
+                FROM fvts_vehicles
+                WHERE vehicle_no IS NOT NULL
+                    AND odometer IS NOT NULL
+                    AND odometer > 0
+                    AND date_time >= CURRENT_DATE - INTERVAL '31 days'
+                GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')), DATE(date_time)
+            ),
+            daily_with_prev AS (
+                SELECT
+                    vehicle_no,
+                    km_date,
+                    end_odometer,
+                    start_odometer,
+                    LAG(end_odometer) OVER (PARTITION BY vehicle_no ORDER BY km_date) as prev_end_odometer
+                FROM daily_odometer
+            )
             SELECT
-                UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no,
-                date as km_date,
-                COALESCE(total_km, 0) as daily_km
-            FROM day_wise_gps_km
-            WHERE date >= CURRENT_DATE - INTERVAL '30 days'
-            ORDER BY vehicle_no, date;
+                vehicle_no,
+                km_date,
+                LEAST(
+                    CASE
+                        WHEN prev_end_odometer IS NOT NULL AND start_odometer >= prev_end_odometer THEN
+                            GREATEST(end_odometer - prev_end_odometer, 0)
+                        WHEN prev_end_odometer IS NULL THEN
+                            GREATEST(end_odometer - start_odometer, 0)
+                        ELSE
+                            GREATEST(end_odometer - start_odometer, 0)
+                    END,
+                    1500
+                ) as daily_km
+            FROM daily_with_prev
+            WHERE end_odometer IS NOT NULL
+                AND km_date >= CURRENT_DATE - INTERVAL '30 days'
+            ORDER BY vehicle_no, km_date;
         """
 
         daily_km_df = pd.read_sql_query(daily_km_query, connection)
@@ -3923,14 +3987,54 @@ def show_long_halted_report():
                 placeholders = ','.join(['%s'] * len(low_km_vnos))
                 # Find last date each vehicle moved > 5 km, then get last moving time on/before that date
                 prev_halt_query = f"""
-                    WITH last_significant_day AS (
+                    WITH daily_odometer AS (
                         SELECT
                             UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
-                            MAX(date) as last_move_date
-                        FROM day_wise_gps_km
-                        WHERE UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) IN ({placeholders})
-                          AND total_km > 5
-                        GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', ''))
+                            DATE(date_time) as km_date,
+                            MAX(odometer) as end_odometer,
+                            MIN(odometer) as start_odometer
+                        FROM fvts_vehicles
+                        WHERE vehicle_no IS NOT NULL
+                            AND odometer IS NOT NULL
+                            AND odometer > 0
+                            AND UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) IN ({placeholders})
+                            AND date_time >= CURRENT_DATE - INTERVAL '30 days'
+                        GROUP BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')), DATE(date_time)
+                    ),
+                    daily_with_prev AS (
+                        SELECT
+                            normalized_vehicle_no,
+                            km_date,
+                            end_odometer,
+                            start_odometer,
+                            LAG(end_odometer) OVER (PARTITION BY normalized_vehicle_no ORDER BY km_date) as prev_end_odometer
+                        FROM daily_odometer
+                    ),
+                    daily_km AS (
+                        SELECT
+                            normalized_vehicle_no,
+                            km_date,
+                            LEAST(
+                                CASE
+                                    WHEN prev_end_odometer IS NOT NULL AND start_odometer >= prev_end_odometer THEN
+                                        GREATEST(end_odometer - prev_end_odometer, 0)
+                                    WHEN prev_end_odometer IS NULL THEN
+                                        GREATEST(end_odometer - start_odometer, 0)
+                                    ELSE
+                                        GREATEST(end_odometer - start_odometer, 0)
+                                END,
+                                1500
+                            ) as total_km
+                        FROM daily_with_prev
+                        WHERE end_odometer IS NOT NULL
+                    ),
+                    last_significant_day AS (
+                        SELECT
+                            normalized_vehicle_no,
+                            MAX(km_date) as last_move_date
+                        FROM daily_km
+                        WHERE total_km > 5
+                        GROUP BY normalized_vehicle_no
                     )
                     SELECT
                         UPPER(REPLACE(REPLACE(fv.vehicle_no, ' ', ''), '-', '')) as normalized_vehicle_no,
