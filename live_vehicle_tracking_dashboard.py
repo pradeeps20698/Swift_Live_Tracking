@@ -2434,7 +2434,8 @@ def show_status_summary(df):
                     f.date_time,
                     f.speed,
                     f.odometer,
-                    f.location
+                    f.location,
+                    LAG(f.odometer) OVER (PARTITION BY f.vehicle_no ORDER BY f.date_time) as prev_odometer
                 FROM fvts_vehicles f
                 WHERE f.speed > 0
                     AND f.ignition = 1
@@ -2454,7 +2455,13 @@ def show_status_summary(df):
                     MAX(date_time) as last_seen,
                     MAX(speed) as max_speed,
                     EXTRACT(EPOCH FROM (MAX(date_time) - MIN(date_time)))/3600 as duration_hours,
-                    COALESCE(MAX(odometer) - MIN(odometer), 0) as night_km,
+                    SUM(CASE
+                        WHEN prev_odometer IS NOT NULL
+                            AND odometer >= prev_odometer
+                            AND (odometer - prev_odometer) <= 100
+                        THEN odometer - prev_odometer
+                        ELSE 0
+                    END) as night_km,
                     COUNT(*) as data_points
                 FROM night_data
                 GROUP BY vehicle_no, normalized_vehicle_no
