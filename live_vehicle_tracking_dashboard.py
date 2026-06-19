@@ -4777,9 +4777,17 @@ def driver_at_home_fragment(df):
     show_driver_at_home(df)
 
 @st.fragment(run_every=600)  # Refresh every 10 minutes
-def reports_fragment():
-    """Reports section with 10-minute auto-refresh"""
-    show_reports()
+def gps_offline_fragment():
+    """GPS Offline report fragment"""
+    show_gps_offline_report()
+
+def long_halted_fragment():
+    """Long Halted report fragment"""
+    show_long_halted_report()
+
+def delay_report_fragment():
+    """Delay report fragment"""
+    show_delay_report()
 
 def nearby_vehicles_fragment(df, search_lat, search_lon, search_radius, search_location_name):
     """Nearby vehicles section"""
@@ -4986,9 +4994,9 @@ def main():
 
     # Tabs
     if enable_nearby_search and search_lat and search_lon:
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["🗺️ Live Map", "📍 Nearby Vehicles", "📋 Live Vehicle Details", "🚚 Load Details", "🌙 Night Driving", "⚠️ Overspeed", "🏠 Driver at Home", "📊 Reports"])
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(["🗺️ Live Map", "📍 Nearby Vehicles", "📋 Live Vehicle Details", "🚚 Load Details", "🌙 Night Driving", "⚠️ Overspeed", "🏠 Driver at Home", "📡 GPS Offline", "🛑 Long Halted", "⏳ Delay Report"])
     else:
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["🗺️ Live Map", "📋 Live Vehicle Details", "🚚 Load Details", "🌙 Night Driving", "⚠️ Overspeed", "🏠 Driver at Home", "📊 Reports"])
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(["🗺️ Live Map", "📋 Live Vehicle Details", "🚚 Load Details", "🌙 Night Driving", "⚠️ Overspeed", "🏠 Driver at Home", "📡 GPS Offline", "🛑 Long Halted", "⏳ Delay Report"])
 
     with tab1:
         map_fragment(filtered_df)
@@ -5013,7 +5021,13 @@ def main():
             driver_at_home_fragment(filtered_df)
 
         with tab8:
-            reports_fragment()
+            gps_offline_fragment()
+
+        with tab9:
+            long_halted_fragment()
+
+        with tab10:
+            delay_report_fragment()
     else:
         with tab2:
             vehicle_list_fragment(filtered_df)
@@ -5031,7 +5045,13 @@ def main():
             driver_at_home_fragment(filtered_df)
 
         with tab7:
-            reports_fragment()
+            gps_offline_fragment()
+
+        with tab8:
+            long_halted_fragment()
+
+        with tab9:
+            delay_report_fragment()
 
     # Footer
     st.markdown("---")
