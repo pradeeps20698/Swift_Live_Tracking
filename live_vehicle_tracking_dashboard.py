@@ -1133,6 +1133,166 @@ def create_sparkline_svg(values, dates):
     return svg
 
 @st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
+def load_trip_status_lite():
+    """Lightweight loader: trip status + today/yesterday KM only.
+    Skips monthly KM, sparklines, and owner mapping for faster loading.
+    Used by Long Halted report and other reports that only need trip status.
+    """
+    connection = None
+    try:
+        connection = get_database_connection()
+
+        query = """
+            WITH first_odo_today AS (
+                SELECT DISTINCT ON (UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')))
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no,
+                    odometer as first_odometer
+                FROM fvts_vehicles
+                WHERE vehicle_no IS NOT NULL AND odometer IS NOT NULL AND odometer > 0
+                    AND DATE(date_time) = CURRENT_DATE
+                ORDER BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')), date_time ASC
+            ),
+            last_odo_today AS (
+                SELECT DISTINCT ON (UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')))
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no,
+                    odometer as last_odometer
+                FROM fvts_vehicles
+                WHERE vehicle_no IS NOT NULL AND odometer IS NOT NULL AND odometer > 0
+                    AND DATE(date_time) = CURRENT_DATE
+                ORDER BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')), date_time DESC
+            ),
+            first_odo_yesterday AS (
+                SELECT DISTINCT ON (UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')))
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no,
+                    odometer as first_odometer
+                FROM fvts_vehicles
+                WHERE vehicle_no IS NOT NULL AND odometer IS NOT NULL AND odometer > 0
+                    AND DATE(date_time) = CURRENT_DATE - INTERVAL '1 day'
+                ORDER BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')), date_time ASC
+            ),
+            last_odo_yesterday AS (
+                SELECT DISTINCT ON (UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')))
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no,
+                    odometer as last_odometer
+                FROM fvts_vehicles
+                WHERE vehicle_no IS NOT NULL AND odometer IS NOT NULL AND odometer > 0
+                    AND DATE(date_time) = CURRENT_DATE - INTERVAL '1 day'
+                ORDER BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')), date_time DESC
+            ),
+            all_vehicles AS (
+                SELECT DISTINCT
+                    UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) as vehicle_no
+                FROM fvts_vehicles
+                WHERE recorded_at >= NOW() - INTERVAL '24 hours'
+                    AND vehicle_no IS NOT NULL
+            ),
+            latest_trip_per_vehicle AS (
+                SELECT vehicle_no, trip_status, route, onward_route, party,
+                       loading_date, unloading_date, distance,
+                       driver_name, driver_code, driver_phone_no
+                FROM (
+                    SELECT
+                        UPPER(CASE
+                            WHEN vehicle_no LIKE '%% %%' THEN
+                                SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                            WHEN LENGTH(vehicle_no) >= 9
+                                AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                                AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                                CASE
+                                    WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                        SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                    ELSE
+                                        SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                END
+                            ELSE vehicle_no
+                        END) as vehicle_no,
+                        COALESCE(NULLIF(trip_status, ''), 'Loaded') as trip_status,
+                        route, onward_route, party, loading_date, unloading_date,
+                        COALESCE(distance, 0) as distance,
+                        driver_name, driver_code, driver_phone_no,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY UPPER(CASE
+                                WHEN vehicle_no LIKE '%% %%' THEN
+                                    SPLIT_PART(vehicle_no, ' ', 2) || SPLIT_PART(vehicle_no, ' ', 1)
+                                WHEN LENGTH(vehicle_no) >= 9
+                                    AND SUBSTRING(vehicle_no FROM 1 FOR 4) ~ '^[0-9]+$'
+                                    AND SUBSTRING(vehicle_no FROM 5 FOR 2) ~ '^[A-Z]+$' THEN
+                                    CASE
+                                        WHEN POSITION('-' IN vehicle_no) > 0 THEN
+                                            SUBSTRING(vehicle_no FROM 5 FOR POSITION('-' IN vehicle_no) - 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                        ELSE
+                                            SUBSTRING(vehicle_no FROM 5) || SUBSTRING(vehicle_no FROM 1 FOR 4)
+                                    END
+                                ELSE vehicle_no
+                            END)
+                            ORDER BY loading_date DESC NULLS LAST
+                        ) as rn
+                    FROM swift_trip_log
+                    WHERE vehicle_no IS NOT NULL
+                      AND is_active = true
+                ) ranked
+                WHERE rn = 1
+            )
+            SELECT
+                av.vehicle_no,
+                ltpv.trip_status,
+                ltpv.route,
+                ltpv.onward_route,
+                ltpv.party,
+                ltpv.loading_date,
+                ltpv.unloading_date,
+                ltpv.distance,
+                ltpv.driver_name,
+                ltpv.driver_code,
+                ltpv.driver_phone_no,
+                COALESCE(GREATEST(lt.last_odometer - ft.first_odometer, 0), 0) as gps_today_km,
+                COALESCE(GREATEST(ly.last_odometer - fy.first_odometer, 0), 0) as gps_yesterday_km
+            FROM all_vehicles av
+            LEFT JOIN latest_trip_per_vehicle ltpv ON av.vehicle_no = ltpv.vehicle_no
+            LEFT JOIN first_odo_today ft ON av.vehicle_no = ft.vehicle_no
+            LEFT JOIN last_odo_today lt ON av.vehicle_no = lt.vehicle_no
+            LEFT JOIN first_odo_yesterday fy ON av.vehicle_no = fy.vehicle_no
+            LEFT JOIN last_odo_yesterday ly ON av.vehicle_no = ly.vehicle_no
+            ORDER BY av.vehicle_no;
+        """
+
+        df = pd.read_sql_query(query, connection)
+
+        if EXCLUDED_VEHICLES:
+            df['normalized_vehicle'] = df['vehicle_no'].fillna('').str.upper().str.replace(' ', '', regex=False).str.replace('-', '', regex=False)
+            df = df[~df['normalized_vehicle'].isin(EXCLUDED_VEHICLES)]
+            df = df.drop(columns=['normalized_vehicle'])
+
+        if 'distance' in df.columns:
+            df['distance'] = pd.to_numeric(df['distance'], errors='coerce').fillna(0)
+
+        ist = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist).replace(tzinfo=None)
+        loading_date = pd.to_datetime(df['loading_date'], errors='coerce')
+        unloading_date = pd.to_datetime(df.get('unloading_date'), errors='coerce') if 'unloading_date' in df.columns else pd.Series([pd.NaT] * len(df))
+        distance = pd.to_numeric(df.get('distance', 0), errors='coerce').fillna(0)
+        tt_days = distance / 400
+        tt_date = loading_date + pd.to_timedelta(tt_days, unit='D')
+
+        df['current_trip_status'] = '-'
+        df.loc[loading_date.notna() & (distance > 0) & (now < tt_date), 'current_trip_status'] = 'Early'
+        df.loc[loading_date.notna() & (distance > 0) & (now >= tt_date), 'current_trip_status'] = 'Delay'
+        df.loc[unloading_date.notna() & (unloading_date < now), 'current_trip_status'] = 'Trip End'
+
+        return df
+
+    except Exception as e:
+        st.error(f"Error loading trip status: {str(e)}")
+        return pd.DataFrame()
+    finally:
+        if connection:
+            try:
+                _get_connection_pool().putconn(connection)
+            except:
+                pass
+
+
+@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
 def load_vehicle_load_details():
     """Load ALL vehicles and map with their load details from swift_trip_log.
     Optimized: Uses recorded_at index for 2-day scan, ROW_NUMBER for monthly KM.
@@ -3875,7 +4035,7 @@ def show_long_halted_report():
             return
 
         # Step 3: Get Load Details data and filter Current Trip Status = Early/Delay
-        load_df = load_vehicle_load_details()
+        load_df = load_trip_status_lite()
         if load_df is None or len(load_df) == 0:
             st.warning("No load details available")
             return
