@@ -1149,6 +1149,7 @@ def load_trip_status_lite():
                     odometer as first_odometer
                 FROM fvts_vehicles
                 WHERE vehicle_no IS NOT NULL AND odometer IS NOT NULL AND odometer > 0
+                    AND recorded_at >= CURRENT_DATE - INTERVAL '1 day'
                     AND DATE(date_time) = CURRENT_DATE
                 ORDER BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')), date_time ASC
             ),
@@ -1158,6 +1159,7 @@ def load_trip_status_lite():
                     odometer as last_odometer
                 FROM fvts_vehicles
                 WHERE vehicle_no IS NOT NULL AND odometer IS NOT NULL AND odometer > 0
+                    AND recorded_at >= CURRENT_DATE - INTERVAL '1 day'
                     AND DATE(date_time) = CURRENT_DATE
                 ORDER BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')), date_time DESC
             ),
@@ -1167,6 +1169,8 @@ def load_trip_status_lite():
                     odometer as first_odometer
                 FROM fvts_vehicles
                 WHERE vehicle_no IS NOT NULL AND odometer IS NOT NULL AND odometer > 0
+                    AND recorded_at >= CURRENT_DATE - INTERVAL '2 days'
+                    AND recorded_at < CURRENT_DATE
                     AND DATE(date_time) = CURRENT_DATE - INTERVAL '1 day'
                 ORDER BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')), date_time ASC
             ),
@@ -1176,6 +1180,8 @@ def load_trip_status_lite():
                     odometer as last_odometer
                 FROM fvts_vehicles
                 WHERE vehicle_no IS NOT NULL AND odometer IS NOT NULL AND odometer > 0
+                    AND recorded_at >= CURRENT_DATE - INTERVAL '2 days'
+                    AND recorded_at < CURRENT_DATE
                     AND DATE(date_time) = CURRENT_DATE - INTERVAL '1 day'
                 ORDER BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')), date_time DESC
             ),
@@ -4137,7 +4143,8 @@ def show_long_halted_report():
                         FROM fvts_vehicles
                         WHERE vehicle_no IS NOT NULL AND odometer IS NOT NULL AND odometer > 0
                             AND UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) IN ({placeholders})
-                            AND date_time >= CURRENT_DATE - INTERVAL '30 days'
+                            AND recorded_at >= CURRENT_DATE - INTERVAL '15 days'
+                            AND date_time >= CURRENT_DATE - INTERVAL '15 days'
                         ORDER BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')), DATE(date_time), date_time ASC
                     ),
                     last_odo AS (
@@ -4148,7 +4155,8 @@ def show_long_halted_report():
                         FROM fvts_vehicles
                         WHERE vehicle_no IS NOT NULL AND odometer IS NOT NULL AND odometer > 0
                             AND UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')) IN ({placeholders})
-                            AND date_time >= CURRENT_DATE - INTERVAL '30 days'
+                            AND recorded_at >= CURRENT_DATE - INTERVAL '15 days'
+                            AND date_time >= CURRENT_DATE - INTERVAL '15 days'
                         ORDER BY UPPER(REPLACE(REPLACE(vehicle_no, ' ', ''), '-', '')), DATE(date_time), date_time DESC
                     ),
                     daily_km AS (
@@ -4171,8 +4179,9 @@ def show_long_halted_report():
                     FROM fvts_vehicles fv
                     JOIN last_significant_day lsd
                         ON UPPER(REPLACE(REPLACE(fv.vehicle_no, ' ', ''), '-', '')) = lsd.normalized_vehicle_no
-                    WHERE fv.date_time::date <= lsd.last_move_date
-                      AND (fv.speed > 5 OR (fv.speed > 0 AND fv.ignition = 1))
+                    WHERE fv.recorded_at >= CURRENT_DATE - INTERVAL '15 days'
+                      AND fv.date_time::date <= lsd.last_move_date
+                      AND (fv.speed > 15 OR (fv.speed > 0 AND fv.ignition = 1))
                     GROUP BY UPPER(REPLACE(REPLACE(fv.vehicle_no, ' ', ''), '-', ''))
                 """
                 prev_halt_df = pd.read_sql_query(prev_halt_query, conn, params=low_km_vnos + low_km_vnos)
