@@ -1613,40 +1613,7 @@ def show_load_details():
         st.warning("No load details available")
         return
 
-    # Add search and filter options
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        vehicle_filter = st.text_input("🔍 Search Vehicle No", "", key="load_vehicle_search")
-
-    with col2:
-        party_options = ['All'] + list(load_df['party'].dropna().unique()) if 'party' in load_df.columns else ['All']
-        party_filter = st.selectbox("Filter by Party", party_options, key="load_party_filter")
-
-    with col3:
-        status_options = ['All'] + list(load_df['trip_status'].dropna().unique()) if 'trip_status' in load_df.columns else ['All']
-        status_filter = st.selectbox("Filter by Trip Status", status_options, key="load_status_filter")
-
-    with col4:
-        current_trip_status_options = ['All'] + list(load_df['current_trip_status'].dropna().unique()) if 'current_trip_status' in load_df.columns else ['All']
-        current_trip_status_filter = st.selectbox("Filter by Current Trip Status", current_trip_status_options, key="load_current_trip_status_filter")
-
-    # Apply filters
     filtered_load_df = load_df.copy()
-
-    if vehicle_filter:
-        filtered_load_df = filtered_load_df[
-            filtered_load_df['vehicle_no'].str.contains(vehicle_filter, case=False, na=False)
-        ]
-
-    if party_filter != 'All':
-        filtered_load_df = filtered_load_df[filtered_load_df['party'] == party_filter]
-
-    if status_filter != 'All':
-        filtered_load_df = filtered_load_df[filtered_load_df['trip_status'] == status_filter]
-
-    if current_trip_status_filter != 'All':
-        filtered_load_df = filtered_load_df[filtered_load_df['current_trip_status'] == current_trip_status_filter]
 
     # Merge driver_name and driver_code into single column: "Name (Code)"
     if 'driver_name' in filtered_load_df.columns and 'driver_code' in filtered_load_df.columns:
@@ -1886,18 +1853,51 @@ def show_load_details():
                 overflow-x: auto;
                 width: 100%;
             }}
+            .load-details-table .search-row input {{
+                width: 100%;
+                padding: 4px 6px;
+                font-size: 11px;
+                border: 1px solid #555;
+                border-radius: 3px;
+                background-color: #1a1a2e;
+                color: #fff;
+                outline: none;
+                box-sizing: border-box;
+            }}
+            .load-details-table .search-row input::placeholder {{
+                color: #888;
+            }}
+            .load-details-table .search-row input:focus {{
+                border-color: #4FC3F7;
+            }}
+            .load-details-table .search-row td {{
+                background-color: #1e1e1e;
+                padding: 4px 6px;
+                position: sticky;
+                top: 38px;
+                z-index: 9;
+            }}
         </style>
         </head>
         <body>
         <div class="table-container">
-        <table class="load-details-table">
+        <table class="load-details-table" id="loadDetailsTable">
         <thead><tr>
         '''
 
         # Add headers
         for col in display_df.columns:
             html_table += f'<th>{col}</th>'
-        html_table += '</tr></thead><tbody>'
+        html_table += '</tr></thead>'
+
+        # Add search row
+        html_table += '<tbody><tr class="search-row">'
+        for i, col in enumerate(display_df.columns):
+            if col == 'KM Trend (Loading to Today)':
+                html_table += '<td></td>'
+            else:
+                html_table += f'<td><input type="text" placeholder="Search..." onkeyup="filterTable()" data-col="{i}"></td>'
+        html_table += '</tr>'
 
         # Add rows (using to_dict for speed)
         status_cls_map = {'Early': 'early', 'Delay': 'delay', 'Trip End': 'trip-end'}
@@ -1930,7 +1930,27 @@ def show_load_details():
             rows_html_ld.append(f'<tr>{"".join(cells)}</tr>')
         html_table += ''.join(rows_html_ld)
 
-        html_table += '</tbody></table></div></body></html>'
+        html_table += '''</tbody></table></div>
+        <script>
+        function filterTable() {
+            var table = document.getElementById("loadDetailsTable");
+            var inputs = table.querySelectorAll(".search-row input");
+            var rows = table.querySelectorAll("tbody tr:not(.search-row)");
+            rows.forEach(function(row) {
+                var show = true;
+                inputs.forEach(function(input) {
+                    var col = parseInt(input.getAttribute("data-col"));
+                    var val = input.value.toLowerCase();
+                    if (val && row.cells[col]) {
+                        var cellText = row.cells[col].textContent.toLowerCase();
+                        if (cellText.indexOf(val) === -1) show = false;
+                    }
+                });
+                row.style.display = show ? "" : "none";
+            });
+        }
+        </script>
+        </body></html>'''
 
         components.html(html_table, height=table_height, scrolling=True)
     else:
